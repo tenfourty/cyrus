@@ -113,6 +113,7 @@ describe("JSON Schema export", () => {
 			const fields = [
 				"disallowedTools",
 				"appendInstruction",
+				"verificationCommand",
 				"model",
 				"fallbackModel",
 				"promptTemplatePath",
