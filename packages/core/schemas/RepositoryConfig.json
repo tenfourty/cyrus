@@ -88,6 +88,12 @@
 		"appendInstruction": {
 			"type": "string"
 		},
+		"siblingParticipants": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
 		"model": {
 			"type": "string"
 		},
