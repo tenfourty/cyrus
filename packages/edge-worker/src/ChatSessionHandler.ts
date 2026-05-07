@@ -46,8 +46,27 @@ export interface ChatPlatformAdapter<TEvent> {
 	/** Get the unique event ID */
 	getEventId(event: TEvent): string;
 
-	/** Build a platform-specific system prompt */
-	buildSystemPrompt(event: TEvent): string;
+	/**
+	 * Parse any repo-scope tag off the raw event (e.g. Slack's leading
+	 * `[repos=a,b]`). Returns the matched repo names, or `[]` when none are
+	 * present or the platform has no such tag. Used to persist a narrowing
+	 * decision on the session so a later cold resume — which only sees
+	 * whatever event triggered the resume — doesn't silently lose it.
+	 * Optional — platforms without a repo-scope tag omit it.
+	 */
+	parseRepoScope?(event: TEvent): string[];
+
+	/**
+	 * Build a platform-specific system prompt.
+	 *
+	 * @param repoNames Resolved repo-scope filter to apply, e.g. a value
+	 * persisted on the session from an earlier tagged message. When omitted,
+	 * adapters that support repo-scope tags fall back to parsing `event`
+	 * itself. Callers that need scope to survive a cold resume — rather than
+	 * being re-derived from whatever event triggered it — must pass the
+	 * persisted value explicitly (see `ChatSessionHandler`).
+	 */
+	buildSystemPrompt(event: TEvent, repoNames?: string[]): string;
 
 	/** Fetch thread context as formatted string. Returns "" if not applicable */
 	fetchThreadContext(event: TEvent): Promise<string>;
@@ -301,8 +320,20 @@ export class ChatSessionHandler<TEvent> {
 				session.metadata = {};
 			}
 
+			// Persist any repo-scope tag on the initiating event so a later cold
+			// resume — which only sees whatever event triggered the resume,
+			// tagged or not — keeps this narrowing instead of silently reverting
+			// to every configured repo.
+			const initialRepoScope = this.adapter.parseRepoScope?.(event) ?? [];
+			if (initialRepoScope.length > 0) {
+				session.metadata.chatRepoNames = initialRepoScope;
+			}
+
 			// Build the system prompt
-			const systemPrompt = this.adapter.buildSystemPrompt(event);
+			const systemPrompt = this.adapter.buildSystemPrompt(
+				event,
+				session.metadata.chatRepoNames,
+			);
 
 			// Build runner config
 			const runnerConfig = await this.buildRunnerConfig(
@@ -434,7 +465,25 @@ export class ChatSessionHandler<TEvent> {
 		resumeSessionId: string,
 		taskInstructions: string,
 	): Promise<void> {
-		const systemPrompt = this.adapter.buildSystemPrompt(event);
+		// Prefer a repo-scope tag on *this* message when present — that lets a
+		// user explicitly re-narrow (or broaden) scope on a later message. Only
+		// fall back to the scope persisted at session creation when this
+		// message carries no tag of its own, otherwise an untagged follow-up
+		// that happens to trigger a cold resume would silently revert scope to
+		// every configured repo.
+		const parsedRepoScope = this.adapter.parseRepoScope?.(event) ?? [];
+		const repoScope =
+			parsedRepoScope.length > 0
+				? parsedRepoScope
+				: existingSession.metadata?.chatRepoNames;
+		if (parsedRepoScope.length > 0) {
+			if (!existingSession.metadata) {
+				existingSession.metadata = {};
+			}
+			existingSession.metadata.chatRepoNames = parsedRepoScope;
+		}
+
+		const systemPrompt = this.adapter.buildSystemPrompt(event, repoScope);
 
 		const runnerConfig = await this.buildRunnerConfig(
 			existingSession.workspace.path,

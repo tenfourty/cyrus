@@ -7,6 +7,7 @@ export type {
 export { SlackMessageService } from "./SlackMessageService.js";
 export {
 	buildPromptText,
+	extractAttachmentContent,
 	SlackMessageTranslator,
 	stripMention,
 } from "./SlackMessageTranslator.js";

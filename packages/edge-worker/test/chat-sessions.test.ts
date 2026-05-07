@@ -560,6 +560,32 @@ describe("SlackChatAdapter task instructions", () => {
 			"Ask the user for more context",
 		);
 	});
+
+	it("never treats forwarded attachment content as a repo-scope tag, even with no user comment", () => {
+		// Regression test: a repo-scope tag must only ever be recognized in the
+		// text the user themselves typed. Previously the tag was parsed off the
+		// COMBINED own+attachments text, and buildPromptText falls back to
+		// attachments-only when the user's own text is empty — so a bare
+		// forward whose body happened to start with something matching
+		// `repos?=` risked being silently stripped as if it were a scope tag.
+		const adapter = new SlackChatAdapter(
+			createStaticProvider(["/repos/repo-a"]),
+		);
+		const event = mentionEvent("<@U0BOT>", [
+			{
+				is_share: true,
+				author_name: "Sentry",
+				text: "repos=repo-a,repo-b this looks like a scope tag but is forwarded content",
+			},
+		]);
+
+		expect(adapter.extractTaskInstructions(event)).toBe(
+			"[Attachment from Sentry]\nrepos=repo-a,repo-b this looks like a scope tag but is forwarded content",
+		);
+		// The repo-scope filter itself must also be derived from the user's own
+		// text only — it must not narrow scope based on attachment content.
+		expect(adapter.parseRepoScope(event)).toEqual([]);
+	});
 });
 
 describe("SlackChatAdapter responding policy", () => {
@@ -700,6 +726,60 @@ describe("SlackChatAdapter system prompt", () => {
 		expect(systemPrompt).toContain("Bash(git -C * pull)");
 	});
 
+	it("documents the leading repo-scope tag and disambiguates it from the Linear routing tag", () => {
+		// Disclosure gap fix: the same system prompt uses `[repo=...]` for two
+		// different things — a leading `[repos=...]` on a Slack message scopes
+		// this thread's Repository Access list, while `[repo=repo-name]` inside
+		// a Linear issue description (documented under Orchestration Notes)
+		// routes that issue to a repository. The agent must be told about both
+		// so it can explain the distinction to a user.
+		const repositoryPaths = ["/repo/chat-one", "/repo/chat-two"];
+		const adapter = new SlackChatAdapter(createStaticProvider(repositoryPaths));
+		const systemPrompt = adapter.buildSystemPrompt({
+			payload: {
+				user: "U1",
+				channel: "C1",
+				text: "<@cyrus> inspect code",
+				ts: "1700000000.000100",
+				event_ts: "1700000000.000100",
+				type: "app_mention",
+			},
+		} as any);
+
+		expect(systemPrompt).toContain("## Repository Access");
+		expect(systemPrompt).toContain("[repos=repo-a,repo-b]");
+		expect(systemPrompt).toContain(
+			'separate from the `[repo=repo-name]` tag documented under "Orchestration Notes"',
+		);
+	});
+
+	it("documents that the list was narrowed once a repo-scope tag has taken effect", () => {
+		const repositoryPaths = [
+			"/repos/repo-a",
+			"/repos/repo-b",
+			"/repos/repo-deploy",
+		];
+		const adapter = new SlackChatAdapter(createStaticProvider(repositoryPaths));
+		const systemPrompt = adapter.buildSystemPrompt(
+			{
+				payload: {
+					user: "U1",
+					channel: "C1",
+					text: "[repos=repo-a] inspect code",
+					ts: "1700000000.000100",
+					event_ts: "1700000000.000100",
+					type: "app_mention",
+				},
+			} as any,
+			["repo-a"],
+		);
+
+		expect(systemPrompt).toContain("narrowed by a leading");
+		expect(systemPrompt).toContain(
+			'separate from the `[repo=repo-name]` tag documented under "Orchestration Notes"',
+		);
+	});
+
 	it("includes orchestrator routing context and self-assignment workflow", () => {
 		const repositoryPaths = ["/repo/chat-one", "/repo/chat-two"];
 		const repositoryRoutingContext =
@@ -756,6 +836,184 @@ describe("SlackChatAdapter system prompt", () => {
 
 		expect(systemPrompt).not.toContain("## Stopping Automatic Listening");
 		expect(systemPrompt).not.toContain(BEHAVIOURS_PAGE_ROUTE);
+	});
+});
+
+/**
+ * Repo-scope narrowing from a leading `[repos=...]` tag must persist for the
+ * whole thread, not just the message that carried the tag. Prior to this
+ * fix, `buildSystemPrompt` re-derived the filter from whatever event
+ * triggered a resume — so the FIRST tagged message narrowed correctly, but
+ * a later untagged message that resumed a COLD (non-streaming) session
+ * silently reverted to every configured repo. See ChatSessionHandler's
+ * session-creation and resumeSession code paths.
+ */
+describe("ChatSessionHandler repo-scope persistence across a cold resume", () => {
+	const allPaths = ["/repos/repo-a", "/repos/repo-b", "/repos/repo-deploy"];
+
+	function buildSlackEvent(overrides: {
+		eventId: string;
+		text: string;
+		ts: string;
+		threadTs?: string;
+		eventType?: string;
+		upstreamGated?: boolean;
+	}): SlackWebhookEvent {
+		return {
+			eventId: overrides.eventId,
+			eventType: overrides.eventType ?? "message",
+			upstreamGated: overrides.upstreamGated,
+			payload: {
+				user: "U1",
+				channel: "C1",
+				text: overrides.text,
+				ts: overrides.ts,
+				thread_ts: overrides.threadTs,
+				event_ts: overrides.ts,
+			},
+		} as any;
+	}
+
+	/** Sets up a handler whose runner reports `running` via a closure the test controls. */
+	function buildHandler() {
+		const adapter = new SlackChatAdapter(createStaticProvider(allPaths));
+		const configs: any[] = [];
+		let running = false;
+		const createRunner = vi.fn((config: any) => {
+			configs.push(config);
+			running = true;
+			return {
+				supportsStreamingInput: false,
+				start: vi
+					.fn()
+					.mockResolvedValue({ sessionId: `session-${configs.length}` }),
+				startStreaming: vi
+					.fn()
+					.mockResolvedValue({ sessionId: `session-${configs.length}` }),
+				stop: vi.fn(),
+				isRunning: vi.fn(() => running),
+				isStreaming: vi.fn().mockReturnValue(false),
+				addStreamMessage: vi.fn(),
+				getMessages: vi.fn().mockReturnValue([]),
+			} as any;
+		});
+		const handler = new ChatSessionHandler(adapter, {
+			cyrusHome: TEST_CYRUS_CHAT,
+			chatRepositoryProvider: createStaticProvider(allPaths),
+			runnerConfigBuilder: createMockRunnerConfigBuilder(),
+			createRunner,
+			onWebhookStart: vi.fn(),
+			onWebhookEnd: vi.fn(),
+			onStateChange: vi.fn().mockResolvedValue(undefined),
+			onClaudeError: vi.fn(),
+		});
+		/** Ends the current turn: marks the runner session ID, then completes the turn. */
+		const endTurn = async (index: number) => {
+			await configs[index].onMessage({
+				type: "system",
+				subtype: "init",
+				session_id: `session-${index + 1}`,
+				model: "test-model",
+				tools: [],
+				apiKeySource: "test",
+			});
+			await configs[index].onMessage({
+				type: "result",
+				subtype: "success",
+				is_error: false,
+				result: "done",
+				session_id: `session-${index + 1}`,
+			});
+			running = false;
+		};
+		return { handler, configs, createRunner, endTurn };
+	}
+
+	it("keeps a thread narrowed by the first tagged message after a cold resume of an untagged follow-up", async () => {
+		const { handler, configs, createRunner, endTurn } = buildHandler();
+
+		await handler.handleEvent(
+			buildSlackEvent({
+				eventId: "evt-1",
+				eventType: "app_mention",
+				ts: "1700000000.000100",
+				text: "[repos=repo-a,repo-b] look into this",
+			}),
+		);
+		expect(createRunner).toHaveBeenCalledTimes(1);
+		expect(configs[0].appendSystemPrompt).toContain("/repos/repo-a");
+		expect(configs[0].appendSystemPrompt).toContain("/repos/repo-b");
+		expect(configs[0].appendSystemPrompt).not.toContain("/repos/repo-deploy");
+
+		await endTurn(0);
+
+		// Follow-up carries NO tag and arrives after the turn ended, so it
+		// takes the cold-resume path — which must NOT lose the narrowing.
+		await handler.handleEvent(
+			buildSlackEvent({
+				eventId: "evt-2",
+				upstreamGated: true,
+				ts: "1700000000.000200",
+				threadTs: "1700000000.000100",
+				text: "any update on this?",
+			}),
+		);
+		expect(createRunner).toHaveBeenCalledTimes(2);
+		expect(configs[1].appendSystemPrompt).toContain("/repos/repo-a");
+		expect(configs[1].appendSystemPrompt).toContain("/repos/repo-b");
+		expect(configs[1].appendSystemPrompt).not.toContain("/repos/repo-deploy");
+	});
+
+	it("re-narrows scope when a later message on a cold resume carries an explicit new tag", async () => {
+		const { handler, configs, createRunner, endTurn } = buildHandler();
+
+		// First message is untagged — full repo set.
+		await handler.handleEvent(
+			buildSlackEvent({
+				eventId: "evt-1",
+				eventType: "app_mention",
+				ts: "1700000000.000100",
+				text: "hello there",
+			}),
+		);
+		expect(configs[0].appendSystemPrompt).toContain("/repos/repo-a");
+		expect(configs[0].appendSystemPrompt).toContain("/repos/repo-b");
+		expect(configs[0].appendSystemPrompt).toContain("/repos/repo-deploy");
+
+		await endTurn(0);
+
+		// A later message explicitly re-tags scope down to just repo-deploy.
+		await handler.handleEvent(
+			buildSlackEvent({
+				eventId: "evt-2",
+				upstreamGated: true,
+				ts: "1700000000.000200",
+				threadTs: "1700000000.000100",
+				text: "[repos=repo-deploy] now just watch the deploy repo",
+			}),
+		);
+		expect(createRunner).toHaveBeenCalledTimes(2);
+		expect(configs[1].appendSystemPrompt).toContain("/repos/repo-deploy");
+		expect(configs[1].appendSystemPrompt).not.toContain("/repos/repo-a");
+		expect(configs[1].appendSystemPrompt).not.toContain("/repos/repo-b");
+
+		await endTurn(1);
+
+		// A THIRD, untagged message must keep the re-narrowed scope from evt-2,
+		// not fall back to the original (empty) scope from evt-1.
+		await handler.handleEvent(
+			buildSlackEvent({
+				eventId: "evt-3",
+				upstreamGated: true,
+				ts: "1700000000.000300",
+				threadTs: "1700000000.000100",
+				text: "still watching?",
+			}),
+		);
+		expect(createRunner).toHaveBeenCalledTimes(3);
+		expect(configs[2].appendSystemPrompt).toContain("/repos/repo-deploy");
+		expect(configs[2].appendSystemPrompt).not.toContain("/repos/repo-a");
+		expect(configs[2].appendSystemPrompt).not.toContain("/repos/repo-b");
 	});
 });
 

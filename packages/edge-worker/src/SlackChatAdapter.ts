@@ -1,14 +1,17 @@
+import { basename } from "node:path";
 import type { IAgentRunner, ILogger } from "cyrus-core";
 import { createLogger } from "cyrus-core";
 import {
-	buildPromptText,
+	extractAttachmentContent,
 	SlackMessageService,
 	SlackReactionService,
 	type SlackThreadMessage,
 	type SlackWebhookEvent,
+	stripMention,
 } from "cyrus-slack-event-transport";
 import type { ChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import type { ChatPlatformAdapter } from "./ChatSessionHandler.js";
+import { parseSlackRepoTag } from "./parseSlackRepoTag.js";
 
 /**
  * Sentinel the agent emits when it has decided a Slack message does not warrant
@@ -106,7 +109,32 @@ export class SlackChatAdapter
 	}
 
 	extractTaskInstructions(event: SlackWebhookEvent): string {
-		return buildPromptText(event.payload) || "Ask the user for more context";
+		// The repo tag is only ever recognized in the user's own typed text —
+		// never in forwarded/shared attachment content. This matters because
+		// the combined prompt text is NOT always "own text, then attachments":
+		// when the user's own text is empty (e.g. a bare forward with no
+		// comment), the combined text falls back to attachments-only, and a
+		// forwarded message that happens to start with something like
+		// `repos=...` must NOT be treated as a scope tag and stripped. Parsing
+		// `ownText` before combining avoids that.
+		const ownText = stripMention(event.payload.text || "");
+		const { cleanText: cleanOwnText } = parseSlackRepoTag(ownText);
+		const attachments = extractAttachmentContent(event.payload);
+		const combined =
+			cleanOwnText && attachments
+				? `${cleanOwnText}\n\n${attachments}`
+				: attachments || cleanOwnText;
+		return combined || "Ask the user for more context";
+	}
+
+	/**
+	 * Parse a leading repo-scope tag off the user's own typed text (never
+	 * from forwarded attachment content — see `extractTaskInstructions`).
+	 * Returns the matched repo names, or `[]` when no tag is present.
+	 */
+	parseRepoScope(event: SlackWebhookEvent): string[] {
+		const ownText = stripMention(event.payload.text || "");
+		return parseSlackRepoTag(ownText).repoNames;
 	}
 
 	/**
@@ -136,16 +164,39 @@ export class SlackChatAdapter
 		return event.eventId;
 	}
 
-	buildSystemPrompt(event: SlackWebhookEvent): string {
-		const repositoryPaths = Array.from(
+	buildSystemPrompt(event: SlackWebhookEvent, repoNames?: string[]): string {
+		const allPaths = Array.from(
 			new Set(this.repositoryProvider.getRepositoryPaths().filter(Boolean)),
 		).sort();
+
+		// Repo-scope filter: narrow the listed paths to only those matching the
+		// requested repo basenames. Falls back to ALL paths when the tag
+		// matches nothing — keeps the chat usable even with a typo. `repoNames`
+		// is normally the value persisted on the session (see
+		// ChatSessionHandler) so scope survives a cold resume of an untagged
+		// follow-up message; when omitted, fall back to parsing this event
+		// directly (e.g. direct/standalone calls to this method).
+		const resolvedRepoNames = repoNames ?? this.parseRepoScope(event);
+		let repositoryPaths = allPaths;
+		let scopedToTag = false;
+		if (resolvedRepoNames.length > 0) {
+			const wanted = new Set(resolvedRepoNames);
+			const filtered = allPaths.filter((p) => wanted.has(basename(p)));
+			if (filtered.length > 0) {
+				repositoryPaths = filtered;
+				scopedToTag = true;
+			}
+		}
+		const repoScopeNote = scopedToTag
+			? `\n- This list was narrowed by a leading \`[repos=...]\` tag on this thread; it is stripped before you see the message and persists for the whole thread until a new tag is sent. This is separate from the \`[repo=repo-name]\` tag documented under "Orchestration Notes" below, which routes a *newly created Linear issue* to a repository — the two tags look similar but apply in different places.`
+			: `\n- To narrow this list, start a message with \`[repos=repo-a,repo-b]\` (or unbracketed \`repos=repo-a,repo-b\`) — it is stripped from what you see and scopes the thread to just those repos. This is separate from the \`[repo=repo-name]\` tag documented under "Orchestration Notes" below, which routes a *newly created Linear issue* to a repository — the two tags look similar but apply in different places.`;
 		const repositoryAccessSection =
 			repositoryPaths.length > 0
 				? `
 ## Repository Access
 - You have read-only access to the following configured repositories:
 ${repositoryPaths.map((path) => `- ${path}`).join("\n")}
+${repoScopeNote}
 
 - If you need to inspect source code in one of these repositories, use:
   - Bash(git -C * pull)

@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- You can now prefix a Slack message to Cyrus with `[repos=repo-a,repo-b]` (or `repo=repo-name` for a single repo) to narrow which of your configured repositories it can see for that conversation. The tag is removed before Cyrus reads your message, and the narrowed scope stays in effect for the rest of the thread. An unrecognized repo name falls back to showing every configured repository so the conversation keeps working.
 
 ## [0.2.67] - 2026-07-25
 

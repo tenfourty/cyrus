@@ -103,6 +103,16 @@ export interface CyrusAgentSession {
 		totalCostUsd?: number;
 		usage?: any;
 		commentId?: string;
+		/**
+		 * Repo-scope names (e.g. from a chat platform's leading `[repos=a,b]`
+		 * tag) narrowing which configured repositories this session's system
+		 * prompt exposes. Persisted at session creation so a later cold resume
+		 * — which sees whatever event triggered the resume, tagged or not —
+		 * keeps the original narrowing instead of silently reverting to every
+		 * repo. An explicit tag on a later message re-narrows and overwrites
+		 * this value; see `ChatSessionHandler.resumeSession`.
+		 */
+		chatRepoNames?: string[];
 	};
 }
 
