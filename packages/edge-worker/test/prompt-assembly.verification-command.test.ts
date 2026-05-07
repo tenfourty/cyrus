@@ -236,7 +236,20 @@ cargo test
 
 <verification-command repository="cove-deploy">
 ansible-lint roles/
-</verification-command>`)
+</verification-command>
+
+<multi_repo_navigation>
+This session spans MULTIPLE repositories. Each repo has its own worktree:
+  - cove (primary, your cwd): /test/cove
+  - cove-ovh: /test/cove-ovh
+  - cove-deploy: /test/cove-deploy
+
+Your default cwd is the primary worktree. To run commands against a non-primary repo,
+either \`cd\` into its worktree or use \`git -C <path>\` for git operations. Each repo
+has its own branch (same name across repos) and may require its own verification
+commands. When committing, treat each worktree independently — open one PR/MR per
+repo that has changes; not every issue requires changes in every repo.
+</multi_repo_navigation>`)
 			.expectPromptType("fallback")
 			.expectComponents("issue-context")
 			.verify();
