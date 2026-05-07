@@ -143,6 +143,7 @@ import { AttachmentService } from "./AttachmentService.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
+import { composeInitialAllowedDirectories } from "./composeInitialAllowedDirectories.js";
 import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
 import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
@@ -3939,16 +3940,19 @@ ${taskSection}`;
 			),
 		);
 
-		// Build allowed directories list - always include attachments directory
-		// Include repository paths from all repositories
-		const allRepoPaths = repositories.map((repo) => repo.repositoryPath);
-		const allowedDirectories: string[] = [
-			...new Set([
-				attachmentsDir,
-				...allRepoPaths,
-				...this.gitService.getGitMetadataDirectories(workspace.path),
-			]),
-		];
+		// Build allowed directories list. For multi-repo sessions, this must
+		// include every per-session worktree path from session.workspace.repoPaths
+		// (not just each repo's canonical source path) so the agent can
+		// Read/Edit files inside the sibling worktrees. The shared helper
+		// also walks per-worktree git metadata so worktree-internal git state
+		// stays accessible.
+		const allowedDirectories = composeInitialAllowedDirectories({
+			session,
+			repositories,
+			attachmentsDir,
+			getGitMetadataDirectories: (path) =>
+				this.gitService.getGitMetadataDirectories(path),
+		});
 
 		this.logger.debug(
 			`Configured allowed directories for ${fullIssue.identifier}:`,
@@ -6710,14 +6714,30 @@ ${input.userComment}
 		);
 		await mkdir(attachmentsDir, { recursive: true });
 
-		const allowedDirectories = [
-			...new Set([
-				attachmentsDir,
-				repository.repositoryPath,
-				...additionalAllowedDirectories,
-				...this.gitService.getGitMetadataDirectories(session.workspace.path),
-			]),
-		];
+		// Derive the participating repository configs for this session.
+		// resumeAgentSession only receives the primary `repository`, but a
+		// multi-repo session has sibling worktrees recorded in
+		// `session.workspace.repoPaths`. Look those siblings up in the
+		// configured repository map so the allowedDirectories list mirrors
+		// what the initial-creation path produces (every participating repo's
+		// canonical source path AND every worktree path).
+		const participatingRepos: RepositoryConfig[] = [repository];
+		if (session.workspace.repoPaths) {
+			for (const repoId of Object.keys(session.workspace.repoPaths)) {
+				if (repoId === repository.id) continue;
+				const sibling = this.repositories.get(repoId);
+				if (sibling) participatingRepos.push(sibling);
+			}
+		}
+
+		const allowedDirectories = composeInitialAllowedDirectories({
+			session,
+			repositories: participatingRepos,
+			attachmentsDir,
+			additionalAllowedDirectories,
+			getGitMetadataDirectories: (path) =>
+				this.gitService.getGitMetadataDirectories(path),
+		});
 
 		const resumeSessionId = needsNewSession
 			? undefined

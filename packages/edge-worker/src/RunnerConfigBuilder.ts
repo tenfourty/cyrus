@@ -18,6 +18,7 @@ import type {
 	RunnerType,
 } from "cyrus-core";
 import { buildPrMarkerHook } from "./hooks/PrMarkerHook.js";
+import { resolveSessionWorkingDirectory } from "./resolveSessionWorkingDirectory.js";
 
 /**
  * Subset of McpConfigService consumed by RunnerConfigBuilder.
@@ -281,7 +282,10 @@ export class RunnerConfigBuilder {
 		);
 
 		const config: AgentRunnerConfig & Record<string, unknown> = {
-			workingDirectory: input.session.workspace.path,
+			workingDirectory: resolveSessionWorkingDirectory(
+				input.session,
+				input.repository,
+			),
 			allowedTools: input.allowedTools,
 			disallowedTools: input.disallowedTools,
 			allowedDirectories: input.allowedDirectories,

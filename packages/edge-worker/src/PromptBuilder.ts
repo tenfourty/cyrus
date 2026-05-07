@@ -963,6 +963,29 @@ IMPORTANT: Focus specifically on addressing the new comment above. This is a new
 				}
 			}
 
+			// Multi-repo: append navigation guidance so the agent knows where its
+			// cwd is, what sibling worktrees are accessible, and how to reach them.
+			if (repositories.length > 1) {
+				const primaryRepo = repositories[0]!;
+				const primaryPath =
+					workspaceRepoPaths?.[primaryRepo.id] ?? primaryRepo.repositoryPath;
+				const siblingLines = repositories.slice(1).map((repo) => {
+					const path = workspaceRepoPaths?.[repo.id] ?? repo.repositoryPath;
+					return `  - ${repo.name}: ${path}`;
+				});
+				prompt = `${prompt}\n\n<multi_repo_navigation>
+This session spans MULTIPLE repositories. Each repo has its own worktree:
+  - ${primaryRepo.name} (primary, your cwd): ${primaryPath}
+${siblingLines.join("\n")}
+
+Your default cwd is the primary worktree. To run commands against a non-primary repo,
+either \`cd\` into its worktree or use \`git -C <path>\` for git operations. Each repo
+has its own branch (same name across repos) and may require its own verification
+commands. When committing, treat each worktree independently — open one PR/MR per
+repo that has changes; not every issue requires changes in every repo.
+</multi_repo_navigation>`;
+			}
+
 			this.logger.debug(`Final prompt length: ${prompt.length} characters`);
 			return { prompt, version: templateVersion };
 		} catch (error) {

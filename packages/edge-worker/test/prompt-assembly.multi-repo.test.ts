@@ -84,7 +84,19 @@ Spans multiple repositories
 
 <linear_comments>
 No comments yet.
-</linear_comments>`)
+</linear_comments>
+
+<multi_repo_navigation>
+This session spans MULTIPLE repositories. Each repo has its own worktree:
+  - frontend-app (primary, your cwd): /test/frontend
+  - backend-api: /test/backend
+
+Your default cwd is the primary worktree. To run commands against a non-primary repo,
+either \`cd\` into its worktree or use \`git -C <path>\` for git operations. Each repo
+has its own branch (same name across repos) and may require its own verification
+commands. When committing, treat each worktree independently — open one PR/MR per
+repo that has changes; not every issue requires changes in every repo.
+</multi_repo_navigation>`)
 				.expectPromptType("fallback")
 				.expectComponents("issue-context")
 				.verify();
@@ -172,7 +184,19 @@ Tests worktree paths
 
 <linear_comments>
 No comments yet.
-</linear_comments>`)
+</linear_comments>
+
+<multi_repo_navigation>
+This session spans MULTIPLE repositories. Each repo has its own worktree:
+  - frontend-app (primary, your cwd): /worktrees/CEE-300/frontend-app
+  - backend-api: /worktrees/CEE-300/backend-api
+
+Your default cwd is the primary worktree. To run commands against a non-primary repo,
+either \`cd\` into its worktree or use \`git -C <path>\` for git operations. Each repo
+has its own branch (same name across repos) and may require its own verification
+commands. When committing, treat each worktree independently — open one PR/MR per
+repo that has changes; not every issue requires changes in every repo.
+</multi_repo_navigation>`)
 				.expectPromptType("fallback")
 				.expectComponents("issue-context")
 				.verify();
@@ -518,6 +542,18 @@ Testing comment with multi-repo
 <linear_comments>
 No comments yet.
 </linear_comments>
+
+<multi_repo_navigation>
+This session spans MULTIPLE repositories. Each repo has its own worktree:
+  - service-a (primary, your cwd): /test/service-a
+  - service-b: /test/service-b
+
+Your default cwd is the primary worktree. To run commands against a non-primary repo,
+either \`cd\` into its worktree or use \`git -C <path>\` for git operations. Each repo
+has its own branch (same name across repos) and may require its own verification
+commands. When committing, treat each worktree independently — open one PR/MR per
+repo that has changes; not every issue requires changes in every repo.
+</multi_repo_navigation>
 
 <user_comment>
 Please update both services
