@@ -88,6 +88,9 @@
 		"appendInstruction": {
 			"type": "string"
 		},
+		"verificationCommand": {
+			"type": "string"
+		},
 		"model": {
 			"type": "string"
 		},
