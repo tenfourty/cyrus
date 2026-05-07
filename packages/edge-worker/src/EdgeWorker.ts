@@ -143,6 +143,7 @@ import { AttachmentService } from "./AttachmentService.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
+import { cleanupSiblingPluginsForSession } from "./cleanupSiblingPluginsForSession.js";
 import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
 import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
@@ -3184,9 +3185,23 @@ ${taskSection}`;
 				`Session stopped — ${message.workItemIdentifier} was marked as Done or Canceled.`,
 			);
 			this.agentSessionManager.removeSession(session.id);
+			// Multi-repo sessions write a sibling-plugins temp dir per-session
+			// (see resolveSiblingSkillPlugins). Sweep it now so plugin scaffolds
+			// don't accumulate across many issues.
+			await cleanupSiblingPluginsForSession({
+				cyrusHome: this.cyrusHome,
+				sessionId: session.id,
+			}).catch((err) => {
+				this.logger.warn(
+					`Failed to cleanup sibling-plugins for session ${session.id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
 		}
 
 		// Delete worktrees for this issue, keyed by the Linear issue identifier.
+		// GitService.deleteWorktree handles both single-repo and multi-repo
+		// (parent dir of N worktrees) layouts: it enumerates all git worktrees
+		// under the workspace path and removes each before deleting the parent.
 		this.gitService.deleteWorktree(message.workItemIdentifier);
 
 		this.logger.info(

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Sibling-plugins temp dir cleanup on session end** — When an issue is marked Done or Canceled and Cyrus tears down its sessions, the per-session sibling-plugins temp directory at `~/.cyrus/sibling-plugins/<sessionId>/` (created by the multi-repo skill discovery feature) is now removed alongside the worktrees. Prevents unbounded growth of plugin scaffolds across many issues. Symlink targets outside the session dir are not followed — only the link inside the session dir is removed. Best-effort: a cleanup failure logs a warning and does not block worktree deletion.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
