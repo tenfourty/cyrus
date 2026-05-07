@@ -163,6 +163,7 @@ import {
 } from "./RepositoryRouter.js";
 import { RunnerConfigBuilder } from "./RunnerConfigBuilder.js";
 import { RunnerSelectionService } from "./RunnerSelectionService.js";
+import { resolveSiblingSkillPlugins } from "./resolveSiblingSkillPlugins.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
@@ -6017,7 +6018,18 @@ ${input.userComment}
 			linearWorkspaceId,
 			cyrusHome: this.cyrusHome,
 			logger: log,
-			plugins: await this.skillsPluginResolver.resolve(),
+			plugins: [
+				...(await this.skillsPluginResolver.resolve()),
+				...(await resolveSiblingSkillPlugins({
+					siblingWorktreePaths: session.workspace.repoPaths
+						? Object.entries(session.workspace.repoPaths)
+								.filter(([repoId]) => repoId !== repository.id)
+								.map(([, path]) => path)
+						: [],
+					cyrusHome: this.cyrusHome,
+					sessionId,
+				})),
+			],
 			sandboxSettings: this.sdkSandboxSettings ?? undefined,
 			egressCaCertPath: this.egressCaCertPath ?? undefined,
 			onMessage: (message: SDKMessage) => {
