@@ -233,12 +233,16 @@ export class RepositoryRouter {
 			workspaceId,
 		);
 		if (labelMatchedRepos.length > 0) {
+			const expanded = this.expandWithSiblingParticipants(
+				labelMatchedRepos,
+				workspaceRepos,
+			);
 			this.logger.info(
-				`Repositories selected: [${labelMatchedRepos.map((r) => r.name).join(", ")}] (label-based routing)`,
+				`Repositories selected: [${expanded.map((r) => r.name).join(", ")}] (label-based routing)`,
 			);
 			return {
 				type: "selected",
-				repositories: labelMatchedRepos,
+				repositories: expanded,
 				routingMethod: "label-based",
 			};
 		}
@@ -251,12 +255,16 @@ export class RepositoryRouter {
 				workspaceId,
 			);
 			if (projectMatchedRepo) {
+				const expanded = this.expandWithSiblingParticipants(
+					[projectMatchedRepo],
+					workspaceRepos,
+				);
 				this.logger.info(
-					`Repository selected: ${projectMatchedRepo.name} (project-based routing)`,
+					`Repositories selected: [${expanded.map((r) => r.name).join(", ")}] (project-based routing)`,
 				);
 				return {
 					type: "selected",
-					repositories: [projectMatchedRepo],
+					repositories: expanded,
 					routingMethod: "project-based",
 				};
 			}
@@ -269,12 +277,16 @@ export class RepositoryRouter {
 				workspaceRepos,
 			);
 			if (teamMatchedRepo) {
+				const expanded = this.expandWithSiblingParticipants(
+					[teamMatchedRepo],
+					workspaceRepos,
+				);
 				this.logger.info(
-					`Repository selected: ${teamMatchedRepo.name} (team-based routing)`,
+					`Repositories selected: [${expanded.map((r) => r.name).join(", ")}] (team-based routing)`,
 				);
 				return {
 					type: "selected",
-					repositories: [teamMatchedRepo],
+					repositories: expanded,
 					routingMethod: "team-based",
 				};
 			}
@@ -287,12 +299,16 @@ export class RepositoryRouter {
 			if (prefix) {
 				const repo = this.findRepositoryByTeamKey(prefix, workspaceRepos);
 				if (repo) {
+					const expanded = this.expandWithSiblingParticipants(
+						[repo],
+						workspaceRepos,
+					);
 					this.logger.info(
-						`Repository selected: ${repo.name} (team prefix routing)`,
+						`Repositories selected: [${expanded.map((r) => r.name).join(", ")}] (team prefix routing)`,
 					);
 					return {
 						type: "selected",
-						repositories: [repo],
+						repositories: expanded,
 						routingMethod: "team-prefix",
 					};
 				}
@@ -309,12 +325,16 @@ export class RepositoryRouter {
 		);
 
 		if (catchAllRepo) {
+			const expanded = this.expandWithSiblingParticipants(
+				[catchAllRepo],
+				workspaceRepos,
+			);
 			this.logger.info(
-				`Repository selected: ${catchAllRepo.name} (workspace catch-all)`,
+				`Repositories selected: [${expanded.map((r) => r.name).join(", ")}] (workspace catch-all)`,
 			);
 			return {
 				type: "selected",
-				repositories: [catchAllRepo],
+				repositories: expanded,
 				routingMethod: "catch-all",
 			};
 		}
@@ -324,6 +344,50 @@ export class RepositoryRouter {
 			`No routing match for ${workspaceRepos.length} workspace repositories - requesting user selection`,
 		);
 		return { type: "needs_selection", workspaceRepos };
+	}
+
+	/**
+	 * Expand a matched repository set with `siblingParticipants` from each
+	 * matched repo's config. Looks up sibling IDs in the full workspace repo
+	 * list; unknown IDs are silently skipped (they may refer to repos that
+	 * have been removed or live in another workspace).
+	 *
+	 * Order: matched repos first (preserved), then siblings in the order
+	 * they appear in `siblingParticipants`. Deduplicated.
+	 *
+	 * NOT applied to description-tag routing — that path is treated as an
+	 * explicit user override.
+	 */
+	private expandWithSiblingParticipants(
+		matched: RepositoryConfig[],
+		workspaceRepos: RepositoryConfig[],
+	): RepositoryConfig[] {
+		const repoById = new Map(workspaceRepos.map((r) => [r.id, r]));
+		const seen = new Set<string>();
+		const result: RepositoryConfig[] = [];
+
+		for (const repo of matched) {
+			if (!seen.has(repo.id)) {
+				seen.add(repo.id);
+				result.push(repo);
+			}
+		}
+		for (const repo of matched) {
+			const siblings = repo.siblingParticipants ?? [];
+			for (const siblingId of siblings) {
+				if (seen.has(siblingId)) continue;
+				const sibling = repoById.get(siblingId);
+				if (!sibling) {
+					this.logger.warn(
+						`siblingParticipants entry '${siblingId}' on repo '${repo.name}' did not match any registered workspace repository — skipped`,
+					);
+					continue;
+				}
+				seen.add(siblingId);
+				result.push(sibling);
+			}
+		}
+		return result;
 	}
 
 	/**

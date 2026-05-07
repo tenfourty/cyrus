@@ -114,6 +114,7 @@ describe("JSON Schema export", () => {
 				"disallowedTools",
 				"appendInstruction",
 				"verificationCommand",
+				"siblingParticipants",
 				"model",
 				"fallbackModel",
 				"promptTemplatePath",
