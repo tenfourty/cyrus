@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Sibling-worktree skill discovery for multi-repo sessions** — When a session spans multiple repositories, skills shipped in a sibling worktree's `.claude/skills/<name>/SKILL.md` are now discoverable by the agent. Each sibling with at least one skill gets a session-scoped temp plugin directory under `~/.cyrus/sibling-plugins/<sessionId>/<sanitized>/` containing an auto-generated `plugin.json` manifest and a `skills/` symlink pointing at the sibling's `.claude/skills/`. The temp plugin is added to the runner's `plugins` array alongside the standard internal/user plugins. Note: sibling `.claude/commands/*.md` slash-commands are NOT covered — claude-agent-sdk plugins do not load commands, only the cwd's project-layer settings do. Cross-repo command discovery requires a separate mechanism.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
