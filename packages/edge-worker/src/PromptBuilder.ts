@@ -963,6 +963,15 @@ IMPORTANT: Focus specifically on addressing the new comment above. This is a new
 				}
 			}
 
+			// Append per-repo verification commands so the agent runs the right
+			// test/lint/typecheck commands in each repo's worktree.
+			for (const repo of repositories) {
+				if (repo.verificationCommand) {
+					this.logger.debug(`Adding verification command for ${repo.name}`);
+					prompt = `${prompt}\n\n<verification-command repository="${repo.name}">\n${repo.verificationCommand}\n</verification-command>`;
+				}
+			}
+
 			this.logger.debug(`Final prompt length: ${prompt.length} characters`);
 			return { prompt, version: templateVersion };
 		} catch (error) {
