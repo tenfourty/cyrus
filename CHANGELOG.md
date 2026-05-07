@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Per-repo `verificationCommand` config field** — Each repository entry can now declare an optional `verificationCommand` string that is surfaced to the agent in the issue context prompt as a `<verification-command repository="...">...</verification-command>` block. Useful when different repositories need different test/lint/typecheck commands (e.g. `cargo test && cargo clippy` for one repo, `ansible-lint roles/` for another). The agent receives one block per repository that sets it, in repository order. Repositories that omit the field produce no block. Foundation for upcoming multi-repo session work where each worktree's verification commands should run independently.
+- **Per-repo `verificationCommand` config field** — Each repository entry can now declare an optional `verificationCommand` string that is surfaced to the agent in the issue context prompt as a `<verification-command repository="...">...</verification-command>` block. Useful when different repositories need different test/lint/typecheck commands (e.g. `cargo test && cargo clippy` for one repo, `ansible-lint roles/` for another). The agent receives one block per repository that sets it, in repository order. Repositories that omit the field produce no block.
+- **Multi-repo session plumbing** — When a session spans multiple repositories (Linear issue routes to N repos, or `[repo=a,b]` description tag), the agent now gets first-class access to all participating worktrees:
+  - **`allowedDirectories`** include every worktree in `session.workspace.repoPaths`, not just the primary repo's source path. Sibling worktrees are read/edit/write accessible via the SDK's native `allowedDirectories` handling.
+  - **Working directory (cwd)** is set to the PRIMARY repo's worktree path so `git status` and shell commands have a useful default. Previously cwd was the parent of N worktrees (a non-git directory) for multi-repo sessions.
+  - **`<multi_repo_navigation>` prompt block** is appended to the user prompt for multi-repo sessions, listing the primary worktree, all sibling worktrees, and instructing the agent to use `cd <path>` or `git -C <path>` for non-primary operations. Mentions per-repo verification commands and per-repo independent commit/PR semantics.
 
 ## [0.2.51] - 2026-04-30
 
