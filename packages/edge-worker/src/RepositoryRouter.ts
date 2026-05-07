@@ -823,6 +823,75 @@ export class RepositoryRouter {
 	}
 
 	/**
+	 * Multi-select variant of selectRepositoryFromResponse.
+	 *
+	 * Parses the user's reply as comma-separated values; each value may be
+	 * a repo name, GitHub URL, or GitLab URL of one of the pending workspace
+	 * repos. Returns an array of all matched repos (deduplicated, in user-
+	 * supplied order). When the response matches nothing, falls back to the
+	 * first pending repo (single-element array) so the session can still
+	 * proceed — same fallback behavior as the single-select variant.
+	 *
+	 * Returns null when no pending selection exists for the session.
+	 *
+	 * Pending selection is cleared on first call (idempotent).
+	 */
+	async selectRepositoriesFromResponse(
+		agentSessionId: string,
+		userResponse: string,
+	): Promise<RepositoryConfig[] | null> {
+		const pendingData = this.pendingSelections.get(agentSessionId);
+		if (!pendingData) {
+			this.logger.debug(
+				`No pending repository selection found for agent session ${agentSessionId}`,
+			);
+			return null;
+		}
+
+		this.pendingSelections.delete(agentSessionId);
+
+		const parts = userResponse
+			.split(",")
+			.map((p) => p.trim())
+			.filter((p) => p.length > 0);
+
+		const matched: RepositoryConfig[] = [];
+		const seen = new Set<string>();
+		for (const part of parts) {
+			const repo = pendingData.workspaceRepos.find(
+				(r) =>
+					r.githubUrl === part ||
+					r.gitlabUrl === part ||
+					r.name === part ||
+					r.id === part,
+			);
+			if (repo && !seen.has(repo.id)) {
+				seen.add(repo.id);
+				matched.push(repo);
+			}
+		}
+
+		if (matched.length > 0) {
+			this.logger.info(
+				`User selected repositories: [${matched.map((r) => r.name).join(", ")}]`,
+			);
+			return matched;
+		}
+
+		const fallback = pendingData.workspaceRepos[0];
+		if (!fallback) {
+			this.logger.error(
+				`No repositories available for fallback after unmatched response: ${userResponse}`,
+			);
+			return null;
+		}
+		this.logger.info(
+			`Response "${userResponse}" did not match any pending repo — falling back to ${fallback.name}`,
+		);
+		return [fallback];
+	}
+
+	/**
 	 * Check if there's a pending repository selection for this agent session
 	 */
 	hasPendingSelection(agentSessionId: string): boolean {
