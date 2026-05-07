@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- **Per-repo `siblingParticipants` config field** — Each repository entry can now declare an optional `siblingParticipants: string[]` (repo IDs) so that when this repo is matched as primary by routing (label, project, team, or catch-all), the listed siblings are auto-appended to the session as participants. Useful for monorepo-adjacent setups where a primary code repo (e.g. `repo-a`) always wants a sibling ops repo (e.g. `repo-b`) for runbooks/deploy wrappers without requiring users to add `[repo=repo-a,repo-b]` to every issue. One-way directional — set on repo-a only and repo-b-routed issues stay single-repo unless mirrored. Description-tag routing (`[repo=...]`) is treated as an explicit override and skips sibling augmentation. Unknown sibling IDs are logged and skipped.
 
 ## [0.2.67] - 2026-07-25
 
