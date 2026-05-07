@@ -373,6 +373,7 @@ export class RepositoryRouter {
 	 *
 	 * Supported tag syntaxes:
 	 * - [repo=my-repo-name] or [repo=my-repo-name#branch]
+	 * - [repo=frontend,backend#branch] — bracketed, comma-separated repos
 	 * - repo=frontend,backend#branch
 	 * - repos=frontend,backend
 	 */
@@ -476,7 +477,11 @@ export class RepositoryRouter {
 	 *
 	 * Supported syntaxes:
 	 * - `[repo=name]` or `[repo=name#branch]` — bracketed, single repo per tag
-	 * - `repo=name,name2#branch` — unbracketed, comma-separated repos with optional branch
+	 * - `[repo=name1,name2#branch]` or `[repo=name1, name2#branch]` — bracketed,
+	 *   comma-separated repos (an optional space after each comma is allowed)
+	 *   with optional branch
+	 * - `repo=name,name2#branch` or `repo=name, name2#branch` — unbracketed,
+	 *   comma-separated repos with optional branch
 	 * - `repos=name,name2#branch` — same as above with plural "repos"
 	 *
 	 * Also handles escaped brackets (\\[repo=...\\]) which Linear may produce.
@@ -488,9 +493,16 @@ export class RepositoryRouter {
 	): { repo: string; branch?: string }[] {
 		const tags: { repo: string; branch?: string }[] = [];
 
+		// A repo value: one or more repo segments, comma-separated, with an
+		// optional space after each comma (but not before — whitespace must
+		// stay bounded so the unbracketed pattern below doesn't swallow the
+		// rest of the sentence).
+		const repoValue = "[a-zA-Z0-9_\\-/.#]+(?:,\\s*[a-zA-Z0-9_\\-/.#]+)*";
+
 		// Pattern 1: Bracketed [repo=...] (existing syntax)
-		// Matches: [repo=name], [repo=name#branch], \[repo=name\]
-		const bracketRegex = /\\?\[repo=([a-zA-Z0-9_\-/.#]+)\\?\]/g;
+		// Matches: [repo=name], [repo=name#branch], [repo=name1,name2],
+		// [repo=name1, name2#branch], \[repo=name\]
+		const bracketRegex = new RegExp(`\\\\?\\[repo=(${repoValue})\\\\?\\]`, "g");
 		for (const match of description.matchAll(bracketRegex)) {
 			if (match[1]) {
 				tags.push(...this.parseRepoValue(match[1]));
@@ -498,9 +510,12 @@ export class RepositoryRouter {
 		}
 
 		// Pattern 2: Unbracketed repos?=... (new syntax)
-		// Matches: repo=name, repos=name,name2, repo=name,name2#branch
+		// Matches: repo=name, repos=name,name2, repo=name, name2#branch
 		// Must be at start of line or after whitespace to avoid matching inside URLs/paths
-		const unbracketedRegex = /(?:^|[\s\n])repos?=([a-zA-Z0-9_\-/.#,]+)/gm;
+		const unbracketedRegex = new RegExp(
+			`(?:^|[\\s\\n])repos?=(${repoValue})`,
+			"gm",
+		);
 		for (const match of description.matchAll(unbracketedRegex)) {
 			if (match[1]) {
 				tags.push(...this.parseRepoValue(match[1]));
@@ -518,7 +533,10 @@ export class RepositoryRouter {
 
 	/**
 	 * Parse a repo value that may contain commas (multiple repos) and #branch.
-	 * The #branch suffix applies to all repos in a comma-separated list.
+	 * The #branch suffix applies to all repos in a comma-separated list. The
+	 * `.trim()` below matters: the calling regexes allow an optional space
+	 * after each comma (e.g. `a, b`), so segments can carry a leading space
+	 * that must be stripped here.
 	 */
 	private parseRepoValue(value: string): { repo: string; branch?: string }[] {
 		// Split branch from the end: everything after the last # that follows a repo name
