@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { IAgentRunner, ILogger } from "cyrus-core";
 import { createLogger } from "cyrus-core";
 import {
@@ -9,6 +10,7 @@ import {
 } from "cyrus-slack-event-transport";
 import type { ChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import type { ChatPlatformAdapter } from "./ChatSessionHandler.js";
+import { parseSlackRepoTag } from "./parseSlackRepoTag.js";
 
 /**
  * Slack implementation of ChatPlatformAdapter.
@@ -69,9 +71,9 @@ export class SlackChatAdapter
 	}
 
 	extractTaskInstructions(event: SlackWebhookEvent): string {
-		return (
-			stripSlackMention(event.payload.text) || "Ask the user for more context"
-		);
+		const stripped = stripSlackMention(event.payload.text);
+		const { cleanText } = parseSlackRepoTag(stripped);
+		return cleanText || "Ask the user for more context";
 	}
 
 	getThreadKey(event: SlackWebhookEvent): string {
@@ -84,9 +86,24 @@ export class SlackChatAdapter
 	}
 
 	buildSystemPrompt(event: SlackWebhookEvent): string {
-		const repositoryPaths = Array.from(
+		const allPaths = Array.from(
 			new Set(this.repositoryProvider.getRepositoryPaths().filter(Boolean)),
 		).sort();
+
+		// First-message repo-tag filter: if the user prefixed the mention with
+		// `[repos=a,b]` (or `repos=a,b`), narrow the listed paths to only those
+		// matching the requested repo basenames. Falls back to ALL paths when
+		// the tag matches nothing — keeps the chat usable even with a typo.
+		const strippedText = stripSlackMention(event.payload.text);
+		const { repoNames } = parseSlackRepoTag(strippedText);
+		let repositoryPaths = allPaths;
+		if (repoNames.length > 0) {
+			const wanted = new Set(repoNames);
+			const filtered = allPaths.filter((p) => wanted.has(basename(p)));
+			if (filtered.length > 0) {
+				repositoryPaths = filtered;
+			}
+		}
 		const repositoryAccessSection =
 			repositoryPaths.length > 0
 				? `

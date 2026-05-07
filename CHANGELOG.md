@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Slack first-message repo tag** — Slack mentions can now be prefixed with `[repos=repoA,repoB]` (or unbracketed `repos=repoA,repoB`, plus singular `[repo=name]` / `repo=name`) to narrow the repository set the agent operates on for the thread. The tag is parsed out before the message is shown to the agent (so it doesn't pollute task instructions) and is used to filter the Repository Access section of the Slack chat system prompt to only the named repos. Matching is by basename of the configured repo path. When the tag references unknown repo names, the chat falls back to showing all configured paths so the conversation stays usable. Slash-command (`/cyrus repos repoA,repoB`) form is not yet implemented and would require Slack app config — first-message tag is the supported entry point for now.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
