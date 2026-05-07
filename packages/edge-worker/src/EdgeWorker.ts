@@ -4481,35 +4481,39 @@ ${taskSection}`;
 
 		log.debug(`Processing repository selection response: "${userMessage}"`);
 
-		// Get the selected repository (or fallback)
-		const repository = await this.repositoryRouter.selectRepositoryFromResponse(
-			agentSessionId,
-			userMessage,
-		);
+		// Get the selected repositories (or fallback). The multi-select variant
+		// accepts a comma-separated reply so the user can pick multiple repos
+		// from a single elicitation response.
+		const repositories =
+			await this.repositoryRouter.selectRepositoriesFromResponse(
+				agentSessionId,
+				userMessage,
+			);
 
-		if (!repository) {
+		if (!repositories || repositories.length === 0) {
 			log.error(
-				`Failed to select repository for agent session ${agentSessionId}`,
+				`Failed to select repositories for agent session ${agentSessionId}`,
 			);
 			return;
 		}
 
-		// Cache the selected repository for this issue as string[]
+		// Cache the selected repositories for this issue as string[]
 		const issueId = agentSession.issue.id;
-		this.repositoryRouter
-			.getIssueRepositoryCache()
-			.set(issueId, [repository.id]);
-
-		log.debug(
-			`Initializing agent runner after repository selection: ${agentSession.issue.identifier} -> ${repository.name}`,
+		this.repositoryRouter.getIssueRepositoryCache().set(
+			issueId,
+			repositories.map((r) => r.id),
 		);
 
-		// Initialize agent runner with the selected repository (wrapped in array)
+		log.debug(
+			`Initializing agent runner after repository selection: ${agentSession.issue.identifier} -> [${repositories.map((r) => r.name).join(", ")}]`,
+		);
+
+		// Initialize agent runner with the selected repositories.
 		// routingMethod="user-selected" will be included in the combined routing activity
 		// Use organizationId from webhook as the Linear-native workspace ID source
 		await this.initializeAgentRunner(
 			agentSession,
-			[repository],
+			repositories,
 			webhook.organizationId,
 			guidance,
 			commentBody,

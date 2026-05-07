@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Multi-select repository picker** — When Cyrus posts a repository-selection elicitation in Linear (because no routing rule matched), the user can now reply with a comma-separated list of repo names/URLs (e.g. `cove, cove-ovh`) to select MULTIPLE repositories for the session. Previously the response was treated as a single repo only and additional values were dropped. Single-value responses still work the same way (backward compat). Falls back to the first pending repo when the response matches nothing — same fallback behavior as before.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
