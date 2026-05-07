@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- **Per-repo `verificationCommand` config field** — Each repository entry can now declare an optional `verificationCommand` string that is surfaced to the agent in the issue context prompt as a `<verification-command repository="...">...</verification-command>` block. Useful when different repositories need different test/lint/typecheck commands (e.g. `cargo test && cargo clippy` for one repo, `ansible-lint roles/` for another). The agent receives one block per repository that sets it, in repository order. Repositories that omit the field produce no block. Foundation for upcoming multi-repo session work where each worktree's verification commands should run independently.
 
 ## [0.2.67] - 2026-07-25
 

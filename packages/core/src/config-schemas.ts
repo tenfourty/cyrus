@@ -303,6 +303,7 @@ export const RepositoryConfigSchema = z.object({
 	disallowedTools: z.array(z.string()).optional(),
 	mcpConfigPath: z.union([z.string(), z.array(z.string())]).optional(),
 	appendInstruction: z.string().optional(),
+	verificationCommand: z.string().optional(),
 	model: z.string().optional(),
 	fallbackModel: z.string().optional(),
 
