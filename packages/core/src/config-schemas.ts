@@ -303,6 +303,22 @@ export const RepositoryConfigSchema = z.object({
 	disallowedTools: z.array(z.string()).optional(),
 	mcpConfigPath: z.union([z.string(), z.array(z.string())]).optional(),
 	appendInstruction: z.string().optional(),
+	/**
+	 * Repo IDs of OTHER registered repositories that should automatically
+	 * participate in any session routed to THIS repository. Useful for
+	 * setups where a primary code repository always needs a sibling
+	 * operations or shared-library repository (for runbooks, deploy
+	 * wrappers, shared types, etc.). The matched primary stays primary;
+	 * siblings are appended as participants.
+	 *
+	 * One-way directional: setting this on repo A does NOT cause sessions
+	 * routed to repo B to auto-include repo A. Mirror the field manually
+	 * if you want symmetric pairing.
+	 *
+	 * Skipped when the user explicitly specifies repos via a description
+	 * tag like `[repo=a,b]` — the tag is treated as an explicit override.
+	 */
+	siblingParticipants: z.array(z.string()).optional(),
 	model: z.string().optional(),
 	fallbackModel: z.string().optional(),
 
