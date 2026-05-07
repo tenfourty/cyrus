@@ -489,8 +489,9 @@ export class RepositoryRouter {
 		const tags: { repo: string; branch?: string }[] = [];
 
 		// Pattern 1: Bracketed [repo=...] (existing syntax)
-		// Matches: [repo=name], [repo=name#branch], \[repo=name\]
-		const bracketRegex = /\\?\[repo=([a-zA-Z0-9_\-/.#]+)\\?\]/g;
+		// Matches: [repo=name], [repo=name#branch], [repo=name1,name2],
+		// [repo=name1,name2#branch], \[repo=name\]
+		const bracketRegex = /\\?\[repo=([a-zA-Z0-9_\-/.#,]+)\\?\]/g;
 		for (const match of description.matchAll(bracketRegex)) {
 			if (match[1]) {
 				tags.push(...this.parseRepoValue(match[1]));

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Multi-repo description tag accepts comma-separated repos in a single bracket** — Previously `[repo=cove,cove-ovh]` (single bracketed tag with comma-separated repo names) silently failed to match because the bracket regex's allowed character set excluded the comma. Only the unbracketed form `repos=cove,cove-ovh` and multiple separate bracketed tags `[repo=cove] [repo=cove-ovh]` worked. The bracket regex now accepts commas, bringing the bracketed form into parity with the unbracketed form. A trailing `#branch` in a bracketed comma-separated tag (e.g. `[repo=cove,cove-ovh#main]`) applies the branch to every repo in the list, matching the existing unbracketed-form behavior. Per-repo branch overrides remain supported via multiple separate tags.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
