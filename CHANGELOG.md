@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Long-running sessions no longer get parked by silent `Stream closed` errors.** Cyrus now sets `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT=600000` on every Claude subprocess. This raises the SDK's idle-stream timeout so slow tool calls and permission-prompt round-trips don't trip the premature stream close described upstream in [claude-agent-sdk-typescript#114](https://github.com/anthropics/claude-agent-sdk-typescript/issues/114). Symptom previously seen on long sessions: every gated tool call after the break returned `Tool permission request failed: Error: Stream closed`, the agent retried until exhausted, and posted "please unblock me" to Linear with the work uncommitted. Operators can override per-repo via the repository `.env` file.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
