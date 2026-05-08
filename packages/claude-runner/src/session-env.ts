@@ -26,6 +26,14 @@ const AUTH_ENV_KEYS = [
  *
  * - MCP_CONNECTION_NONBLOCKING lets MCP servers connect in the background so
  *   both cold-start and pre-warm sessions return faster.
+ * - CLAUDE_CODE_STREAM_CLOSE_TIMEOUT raises the SDK's idle-stream timeout so
+ *   long tool calls and `canUseTool` round-trips don't trip the premature
+ *   stream close documented upstream in
+ *   https://github.com/anthropics/claude-agent-sdk-typescript/issues/114
+ *   (cluster of "Tool permission request failed: Stream closed" reports —
+ *   #98 closed as a duplicate of #114). 10 minutes covers the slowest tool
+ *   we run today; operators can override per-repo via `.env` or via the
+ *   runner's `additionalEnv` config.
  */
 export const CYRUS_SESSION_ENV = {
 	CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1",
@@ -33,6 +41,7 @@ export const CYRUS_SESSION_ENV = {
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 	CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
 	MCP_CONNECTION_NONBLOCKING: "true",
+	CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: "600000",
 } as const;
 
 /**

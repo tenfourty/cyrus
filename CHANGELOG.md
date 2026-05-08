@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Multi-repo description tag accepts comma-separated repos in a single bracket** — Previously `[repo=a,b]` (single bracketed tag with comma-separated repo names) silently failed to match because the bracket regex's allowed character set excluded the comma. Only the unbracketed form `repos=a,b` and multiple separate bracketed tags `[repo=a] [repo=b]` worked. The bracket regex now accepts commas, bringing the bracketed form into parity with the unbracketed form. A trailing `#branch` in a bracketed comma-separated tag (e.g. `[repo=a,b#main]`) applies the branch to every repo in the list, matching the existing unbracketed-form behavior. Per-repo branch overrides remain supported via multiple separate tags.
+- **Long-running sessions no longer get parked by silent `Stream closed` errors.** Cyrus now sets `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT=600000` on every Claude subprocess. This raises the SDK's idle-stream timeout so slow tool calls and permission-prompt round-trips don't trip the premature stream close described upstream in [claude-agent-sdk-typescript#114](https://github.com/anthropics/claude-agent-sdk-typescript/issues/114). Symptom previously seen on long sessions: every gated tool call after the break returned `Tool permission request failed: Error: Stream closed`, the agent retried until exhausted, and posted "please unblock me" to Linear with the work uncommitted. Operators can override per-repo via the repository `.env` file.
 
 ## [0.2.51] - 2026-04-30
 
