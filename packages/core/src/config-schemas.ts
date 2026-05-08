@@ -311,6 +311,47 @@ export const RepositoryConfigSchema = z.object({
 
 	// Repository-specific user access control
 	userAccessControl: UserAccessControlConfigSchema.optional(),
+
+	/**
+	 * When true, sessions persisted under this repository that were `active`
+	 * at the time Cyrus shut down are auto-respawned at startup. Defaults to
+	 * false so existing installs see no behavior change. See `EdgeConfig.autoResume`
+	 * for fleet-wide tuning (concurrency, jitter, TTL, hold label).
+	 */
+	autoResumeOnStartup: z.boolean().optional(),
+});
+
+/**
+ * Global tuning for auto-resume of in-flight sessions on startup.
+ * Per-repository participation is gated by `RepositoryConfig.autoResumeOnStartup`;
+ * this block only matters once at least one repository opts in.
+ */
+export const AutoResumeConfigSchema = z.object({
+	/** Cap on concurrent `resumeSession` calls during startup drain. */
+	concurrency: z.number().int().positive().optional(),
+	/** [minMs, maxMs] jitter range applied between resume starts. */
+	staggerMs: z
+		.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
+		.refine(([min, max]) => min <= max, {
+			message: "staggerMs must be [minMs, maxMs] with minMs <= maxMs",
+		})
+		.optional(),
+	/**
+	 * Sessions whose `updatedAt` is older than this TTL are skipped at
+	 * startup. Set to 0 to disable the staleness check.
+	 */
+	maxAgeMs: z.number().int().nonnegative().optional(),
+	/**
+	 * Linear label that pauses auto-resume for an issue. Match is
+	 * case-insensitive. Empty string disables the check.
+	 */
+	holdLabel: z.string().optional(),
+	/**
+	 * Whether to post a "resumed after restart" thought activity to Linear
+	 * when a session is respawned. Skip notifications stay silent regardless
+	 * (operators chose those states).
+	 */
+	notifyOnResume: z.boolean().optional(),
 });
 
 /**
@@ -409,6 +450,12 @@ export const EdgeConfigSchema = z.object({
 	 * all agent network traffic through it for inspection and filtering.
 	 */
 	sandbox: SandboxConfigSchema.optional(),
+
+	/**
+	 * Tuning for auto-resume of in-flight sessions on startup. Only applied
+	 * when at least one repository opts in via `autoResumeOnStartup: true`.
+	 */
+	autoResume: AutoResumeConfigSchema.optional(),
 });
 
 /**

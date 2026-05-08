@@ -475,6 +475,9 @@
 							}
 						},
 						"additionalProperties": false
+					},
+					"autoResumeOnStartup": {
+						"type": "boolean"
 					}
 				},
 				"required": [
@@ -920,6 +923,43 @@
 				}
 			},
 			"required": ["httpProxyPort", "socksProxyPort"],
+			"additionalProperties": false
+		},
+		"autoResume": {
+			"type": "object",
+			"properties": {
+				"concurrency": {
+					"type": "integer",
+					"exclusiveMinimum": 0,
+					"maximum": 9007199254740991
+				},
+				"staggerMs": {
+					"type": "array",
+					"prefixItems": [
+						{
+							"type": "integer",
+							"minimum": 0,
+							"maximum": 9007199254740991
+						},
+						{
+							"type": "integer",
+							"minimum": 0,
+							"maximum": 9007199254740991
+						}
+					]
+				},
+				"maxAgeMs": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 9007199254740991
+				},
+				"holdLabel": {
+					"type": "string"
+				},
+				"notifyOnResume": {
+					"type": "boolean"
+				}
+			},
 			"additionalProperties": false
 		}
 	},
