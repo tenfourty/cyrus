@@ -140,6 +140,18 @@ import { ActivityPoster } from "./ActivityPoster.js";
 import { AgentSessionManager } from "./AgentSessionManager.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
+import { AutoResumeOrchestrator } from "./auto-resume/AutoResumeOrchestrator.js";
+import { HoldLabelFilter } from "./auto-resume/filters/HoldLabelFilter.js";
+import { IssueStateFilter } from "./auto-resume/filters/IssueStateFilter.js";
+import { RepositoryOptInFilter } from "./auto-resume/filters/RepositoryOptInFilter.js";
+import { RunnerTypeFilter } from "./auto-resume/filters/RunnerTypeFilter.js";
+import { StalenessFilter } from "./auto-resume/filters/StalenessFilter.js";
+import { WorktreeExistsFilter } from "./auto-resume/filters/WorktreeExistsFilter.js";
+import type {
+	AutoResumeConfig,
+	IssueStateSnapshot,
+	SkipReason,
+} from "./auto-resume/types.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { cleanupSiblingPluginsForSession } from "./cleanupSiblingPluginsForSession.js";
@@ -672,6 +684,18 @@ export class EdgeWorker extends EventEmitter {
 
 		// Initialize and register components BEFORE starting server (routes must be registered before listen())
 		await this.initializeComponents();
+
+		// Auto-resume in-flight sessions after restart. Default-off per repo;
+		// non-blocking — `start()` returns once the orchestrator is kicked off,
+		// the queued resumes drain in the background while the webhook server
+		// comes up. Sessions not yet drained continue to be lazy-resumable
+		// through the normal webhook path.
+		this.runAutoResumeOrchestrator().catch((err) => {
+			this.logger.warn(
+				"Auto-resume orchestrator failed (non-fatal):",
+				err instanceof Error ? err : new Error(String(err)),
+			);
+		});
 
 		// Refresh GitHub webhook allowlist from /meta API (non-blocking)
 		if (this.webhookIpValidator.isEnabled()) {
@@ -6258,6 +6282,186 @@ ${input.userComment}
 		if (!raw) return false;
 		const v = raw.toLowerCase().trim();
 		return v === "1" || v === "true";
+	}
+
+	/**
+	 * Walks active sessions persisted before shutdown and respawns the
+	 * Claude subprocesses for whichever ones still want to be alive. Each
+	 * candidate is run through a filter pipeline (runner type, repo opt-in,
+	 * staleness, worktree presence, Linear issue state, hold label) before
+	 * being enqueued; survivors drain through a concurrency-capped queue
+	 * with jitter so we don't blast the Anthropic API or OOM the host on
+	 * fleets with many open threads.
+	 */
+	private async runAutoResumeOrchestrator(): Promise<void> {
+		const optedIn = Array.from(this.repositories.values()).some(
+			(repo) => (repo as { autoResumeOnStartup?: boolean }).autoResumeOnStartup,
+		);
+		if (!optedIn) return;
+
+		const config = this.resolveAutoResumeConfig();
+		const aggregateManager = this.getAnyAgentSessionManager();
+		if (!aggregateManager) return;
+
+		const orchestrator = new AutoResumeOrchestrator({
+			sessions: () => aggregateManager.getActiveSessions(),
+			repositoryFor: (session) => {
+				const repoId = session.repositories[0]?.repositoryId;
+				return repoId ? this.repositories.get(repoId) : undefined;
+			},
+			fetchIssueState: async (issueId) => {
+				return this.fetchAutoResumeIssueState(issueId);
+			},
+			resumeSession: async (session) => {
+				await this.resumeSessionForAutoResume(session, aggregateManager);
+			},
+			notifyResumed: async (session) => {
+				await this.notifyAutoResumeResumed(session);
+			},
+			notifyRetired: async (session, reason) => {
+				await this.notifyAutoResumeRetired(session, reason);
+			},
+			logger: this.logger,
+			config,
+			filters: [
+				new RunnerTypeFilter(),
+				new RepositoryOptInFilter(),
+				new StalenessFilter(),
+				new WorktreeExistsFilter(),
+				new IssueStateFilter(),
+				new HoldLabelFilter(),
+			],
+		});
+
+		this.logger.info("Auto-resume orchestrator: starting drain");
+		const summary = await orchestrator.run();
+		this.logger.info(
+			`Auto-resume orchestrator: drain complete — resumed=${summary.resumed.length} skipped=${summary.skipped.length} failed=${summary.failed.length}`,
+		);
+		if (summary.skipped.length > 0) {
+			const grouped: Record<string, number> = {};
+			for (const { reason } of summary.skipped) {
+				grouped[reason] = (grouped[reason] ?? 0) + 1;
+			}
+			this.logger.info(
+				`Auto-resume skip breakdown: ${Object.entries(grouped)
+					.map(([reason, count]) => `${reason}=${count}`)
+					.join(", ")}`,
+			);
+		}
+	}
+
+	private resolveAutoResumeConfig(): AutoResumeConfig {
+		const raw = this.config.autoResume ?? {};
+		const concurrency =
+			raw.concurrency && raw.concurrency > 0 ? raw.concurrency : 2;
+		const staggerMs = raw.staggerMs ?? [500, 1500];
+		const maxAgeMs =
+			raw.maxAgeMs !== undefined && raw.maxAgeMs >= 0
+				? raw.maxAgeMs
+				: 7 * 24 * 60 * 60 * 1000;
+		const holdLabel = raw.holdLabel ?? "cyrus:hold";
+		return { concurrency, staggerMs, maxAgeMs, holdLabel };
+	}
+
+	private getAnyAgentSessionManager(): AgentSessionManager | undefined {
+		return this.agentSessionManager;
+	}
+
+	private async fetchAutoResumeIssueState(
+		issueId: string,
+	): Promise<IssueStateSnapshot | undefined> {
+		// Resolve a workspace tracker by trying each configured Linear workspace
+		// in turn — the issue belongs to exactly one and the others will 404.
+		for (const workspaceId of this.issueTrackers.keys()) {
+			const issue = await this.fetchFullIssueDetails(issueId, workspaceId);
+			if (!issue) continue;
+			let stateType: string | undefined;
+			try {
+				const state = await issue.state;
+				stateType = state?.type;
+			} catch {
+				stateType = undefined;
+			}
+			let labels: string[] = [];
+			try {
+				labels = await this.fetchIssueLabels(issue);
+			} catch {
+				labels = [];
+			}
+			return { stateType, labels };
+		}
+		return undefined;
+	}
+
+	private async resumeSessionForAutoResume(
+		session: CyrusAgentSession,
+		agentSessionManager: AgentSessionManager,
+	): Promise<void> {
+		const repoId = session.repositories[0]?.repositoryId;
+		const repo = repoId ? this.repositories.get(repoId) : undefined;
+		if (!repo) {
+			throw new Error(
+				`Auto-resume could not resolve repository for session ${session.id}`,
+			);
+		}
+
+		const linearWorkspaceId = requireLinearWorkspaceId(repo);
+
+		const additionalAllowedDirectories: string[] = [];
+		const repoPaths = session.workspace.repoPaths;
+		if (repoPaths) {
+			for (const [siblingId, path] of Object.entries(repoPaths)) {
+				if (siblingId === repo.id) continue;
+				additionalAllowedDirectories.push(path);
+			}
+		}
+
+		const promptBody =
+			"Cyrus restarted while this session was active. Continue from where you left off — re-check anything that may have been mid-execution before proceeding.";
+
+		await this.resumeAgentSession(
+			session,
+			repo,
+			session.id,
+			agentSessionManager,
+			promptBody,
+			undefined,
+			false,
+			additionalAllowedDirectories,
+			linearWorkspaceId,
+		);
+	}
+
+	private async notifyAutoResumeResumed(
+		session: CyrusAgentSession,
+	): Promise<void> {
+		if (this.config.autoResume?.notifyOnResume === false) return;
+		const repoId = session.repositories[0]?.repositoryId;
+		const repo = repoId ? this.repositories.get(repoId) : undefined;
+		if (!repo) return;
+		const workspaceId = requireLinearWorkspaceId(repo);
+		await this.activityPoster.postThoughtActivity(
+			session.id,
+			workspaceId,
+			"Resumed after Cyrus restart. Conversation context preserved — continuing from the prior turn.",
+		);
+	}
+
+	private async notifyAutoResumeRetired(
+		session: CyrusAgentSession,
+		reason: SkipReason,
+	): Promise<void> {
+		if (reason !== "worktree-missing") return;
+		const repoId = session.repositories[0]?.repositoryId;
+		const repo = repoId ? this.repositories.get(repoId) : undefined;
+		if (!repo) return;
+		const workspaceId = requireLinearWorkspaceId(repo);
+		await this.activityPoster.postThoughtActivity(
+			session.id,
+			workspaceId,
+			"Worktree no longer present after restart; session retired. Re-mention this thread to start a fresh session.",
+		);
 	}
 
 	/**
