@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Auto-resume in-flight sessions on startup (opt-in per repository).** When Cyrus restarts (service restart, VM reboot, crash), sessions that were `active` at shutdown can now be respawned automatically instead of waiting for the operator to ping every Linear thread by hand. Set `autoResumeOnStartup: true` on a repository to opt in (default `false`, so existing installs see no behavior change). At startup, each persisted active session is run through a filter pipeline before being respawned: sessions are skipped when the runner type is not Claude (Gemini, Codex, and Cursor remain webhook-only for now), the repository has not opted in, the session's `updatedAt` is older than `autoResume.maxAgeMs` (default 7 days), the worktree is no longer present on disk, the issue moved to a terminal state during downtime (Done / Canceled), or the issue carries the `autoResume.holdLabel` (default `cyrus:hold`) so an operator-paused thread stays paused. Survivors drain through a concurrency-capped queue (`autoResume.concurrency`, default `2`) with jitter (`autoResume.staggerMs`, default `[500, 1500]` ms) so the Anthropic API and the host don't get hammered when many sessions are open. Resumed sessions post a single thought activity to Linear (`autoResume.notifyOnResume`, default `true`); sessions retired because their worktree is gone post a one-line "session retired" thought so the operator knows to re-mention; sessions skipped for other reasons are silent (the operator chose those states).
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
