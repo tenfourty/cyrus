@@ -479,6 +479,9 @@
 				}
 			},
 			"additionalProperties": false
+		},
+		"autoResumeOnStartup": {
+			"type": "boolean"
 		}
 	},
 	"required": ["id", "name", "repositoryPath", "baseBranch"],
