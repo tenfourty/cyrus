@@ -29,7 +29,6 @@ vi.mock("../src/WorktreeIncludeService.js", () => ({
 	})),
 }));
 
-// Touch unused imports so the lint config doesn't complain
 void existsSync;
 void mkdirSync;
 void readdirSync;
@@ -38,6 +37,51 @@ void rmSync;
 void statSync;
 
 const mockExecSync = vi.mocked(execSync);
+
+/**
+ * Build a deterministic git command router for tests.
+ *
+ * The new resume-time drift algorithm answers "is this worktree's branch
+ * behind origin/<base>?" rather than "did this exact fetch advance
+ * origin/<base>?" — so the fetch delta is irrelevant, and parallel cyrus
+ * traffic that already warmed origin/<base> in the bare repo no longer
+ * silences the check. Tests model the worktree's HEAD, the fork point
+ * (merge-base HEAD origin/<base>), and the upstream tip directly.
+ */
+function gitMock(state: {
+	fetchOk?: boolean;
+	mergeBase?: string | null;
+	upstreamTip?: string | null;
+	behindCount?: number | null;
+}) {
+	const fetchOk = state.fetchOk ?? true;
+	mockExecSync.mockImplementation((cmd: any) => {
+		const c = String(cmd);
+		if (c.includes("fetch origin")) {
+			if (!fetchOk) throw new Error("network down");
+			return "" as any;
+		}
+		if (c.includes("rev-parse") && c.includes("refs/remotes/origin/")) {
+			if (state.upstreamTip == null) {
+				throw new Error("fatal: ambiguous argument: unknown revision");
+			}
+			return `${state.upstreamTip}\n` as any;
+		}
+		if (c.includes("merge-base")) {
+			if (state.mergeBase == null) {
+				throw new Error("fatal: no merge base");
+			}
+			return `${state.mergeBase}\n` as any;
+		}
+		if (c.includes("rev-list --count")) {
+			if (state.behindCount == null) {
+				throw new Error("fatal: bad revision");
+			}
+			return `${state.behindCount}\n` as any;
+		}
+		throw new Error(`unexpected git command: ${c}`);
+	});
+}
 
 describe("GitService.checkBaseBranchDrift", () => {
 	let gitService: GitService;
@@ -54,19 +98,11 @@ describe("GitService.checkBaseBranchDrift", () => {
 		gitService = new GitService({ cyrusHome: "/home/user/.cyrus" }, mockLogger);
 	});
 
-	function execMock(handler: (cmd: string) => string | Buffer) {
-		mockExecSync.mockImplementation((cmd: any) => handler(String(cmd)) as any);
-	}
-
-	it("returns null when origin/<base> SHA did not change during the fetch", async () => {
-		execMock((cmd) => {
-			if (cmd.includes("rev-parse refs/remotes/origin/main")) {
-				return "abc123\n";
-			}
-			if (cmd.includes("fetch origin")) {
-				return "";
-			}
-			throw new Error(`unexpected git command: ${cmd}`);
+	it("returns null when the worktree branch is already at the upstream tip (behind=0)", async () => {
+		gitMock({
+			mergeBase: "tip-sha",
+			upstreamTip: "tip-sha",
+			behindCount: 0,
 		});
 
 		const result = await gitService.checkBaseBranchDrift(
@@ -77,27 +113,11 @@ describe("GitService.checkBaseBranchDrift", () => {
 		expect(result).toBeNull();
 	});
 
-	it("returns drift info when origin/<base> moved during the fetch", async () => {
-		const calls: string[] = [];
-		let fetchCalled = false;
-		mockExecSync.mockImplementation((cmd: any) => {
-			const c = String(cmd);
-			calls.push(c);
-			if (c.includes("rev-parse") && c.includes("refs/remotes/origin/main")) {
-				return (fetchCalled ? "def456\n" : "abc123\n") as any;
-			}
-			if (c.includes("fetch origin")) {
-				fetchCalled = true;
-				return "" as any;
-			}
-			if (
-				c.includes("rev-list --count") &&
-				c.includes("abc123") &&
-				c.includes("def456")
-			) {
-				return "5\n" as any;
-			}
-			throw new Error(`unexpected git command: ${c}`);
+	it("returns drift info with the behind-count when origin/<base> is ahead of the worktree branch", async () => {
+		gitMock({
+			mergeBase: "fork-sha",
+			upstreamTip: "tip-sha",
+			behindCount: 9,
 		});
 
 		const result = await gitService.checkBaseBranchDrift(
@@ -105,26 +125,61 @@ describe("GitService.checkBaseBranchDrift", () => {
 			"main",
 		);
 
-		expect(result).toEqual({ commitCount: 5, branchName: "main" });
+		expect(result).toEqual({ commitCount: 9, branchName: "main" });
 	});
 
-	it("returns null when there is no local tracking ref yet (first-ever fetch)", async () => {
-		let fetchCalled = false;
-		mockExecSync.mockImplementation((cmd: any) => {
-			const c = String(cmd);
-			if (c.includes("rev-parse") && c.includes("refs/remotes/origin/main")) {
-				if (!fetchCalled) {
-					throw new Error(
-						"fatal: ambiguous argument 'refs/remotes/origin/main': unknown revision",
-					);
-				}
-				return "def456\n" as any;
-			}
-			if (c.includes("fetch origin")) {
-				fetchCalled = true;
-				return "" as any;
-			}
-			throw new Error(`unexpected git command: ${c}`);
+	it("reports drift even when the bare repo's origin/<base> ref was already current before the fetch", async () => {
+		// Reproduces the agentHost VM scenario: parallel cyrus traffic keeps
+		// origin/main warm in the bare repo, so the fetch is a no-op. The
+		// worktree branch is still 9 commits behind because it was created
+		// from main 9 commits ago.
+		gitMock({
+			mergeBase: "fork-sha",
+			upstreamTip: "tip-sha",
+			behindCount: 9,
+		});
+
+		const result = await gitService.checkBaseBranchDrift(
+			"/worktree/path",
+			"main",
+		);
+
+		expect(result).toEqual({ commitCount: 9, branchName: "main" });
+	});
+
+	it("returns null for a freshly-created branch born exactly at origin/<base> tip", async () => {
+		gitMock({
+			mergeBase: "tip-sha",
+			upstreamTip: "tip-sha",
+			behindCount: 0,
+		});
+
+		const result = await gitService.checkBaseBranchDrift(
+			"/worktree/path",
+			"main",
+		);
+
+		expect(result).toBeNull();
+	});
+
+	it("returns null when origin/<base> is missing (branch deleted upstream)", async () => {
+		gitMock({
+			mergeBase: null,
+			upstreamTip: null,
+		});
+
+		const result = await gitService.checkBaseBranchDrift(
+			"/worktree/path",
+			"main",
+		);
+
+		expect(result).toBeNull();
+	});
+
+	it("returns null when merge-base fails (no shared history)", async () => {
+		gitMock({
+			mergeBase: null,
+			upstreamTip: "tip-sha",
 		});
 
 		const result = await gitService.checkBaseBranchDrift(
@@ -136,15 +191,7 @@ describe("GitService.checkBaseBranchDrift", () => {
 	});
 
 	it("returns null and logs a warning when fetch fails", async () => {
-		execMock((cmd) => {
-			if (cmd.includes("rev-parse refs/remotes/origin/main")) {
-				return "abc123\n";
-			}
-			if (cmd.includes("fetch origin")) {
-				throw new Error("network down");
-			}
-			throw new Error(`unexpected git command: ${cmd}`);
-		});
+		gitMock({ fetchOk: false });
 
 		const result = await gitService.checkBaseBranchDrift(
 			"/worktree/path",
@@ -155,19 +202,15 @@ describe("GitService.checkBaseBranchDrift", () => {
 		expect(mockLogger.warn).toHaveBeenCalled();
 	});
 
-	it("returns null when rev-list reports zero commits between the two SHAs", async () => {
-		let fetchCalled = false;
-		mockExecSync.mockImplementation((cmd: any) => {
-			const c = String(cmd);
-			if (c.includes("rev-parse") && c.includes("refs/remotes/origin/main")) {
-				return (fetchCalled ? "def456\n" : "abc123\n") as any;
-			}
-			if (c.includes("fetch origin")) {
-				fetchCalled = true;
-				return "" as any;
-			}
-			if (c.includes("rev-list --count")) return "0\n" as any;
-			throw new Error(`unexpected git command: ${c}`);
+	it("returns the behind count only (not symmetric difference) when worktree is also ahead of base", async () => {
+		// Diverged: branch has its own commits AND base has new commits.
+		// rev-list --count <fork>..origin/<base> reports only the behind
+		// side, which is exactly what we want — the agent is told how many
+		// upstream commits it hasn't seen, not the symmetric distance.
+		gitMock({
+			mergeBase: "fork-sha",
+			upstreamTip: "tip-sha",
+			behindCount: 4,
 		});
 
 		const result = await gitService.checkBaseBranchDrift(
@@ -175,19 +218,19 @@ describe("GitService.checkBaseBranchDrift", () => {
 			"main",
 		);
 
-		expect(result).toBeNull();
+		expect(result).toEqual({ commitCount: 4, branchName: "main" });
 	});
 
-	it("uses the provided base branch name (not hardcoded main) for fetch and rev-parse", async () => {
+	it("issues fetch, rev-parse, merge-base, and rev-list against the configured base branch (not hardcoded main)", async () => {
 		const calls: string[] = [];
 		mockExecSync.mockImplementation((cmd: any) => {
 			const c = String(cmd);
 			calls.push(c);
-			if (c.includes("rev-parse refs/remotes/origin/develop")) {
-				return "abc123\n" as any;
-			}
-			if (c.includes("fetch origin develop")) return "" as any;
-			throw new Error(`unexpected git command: ${c}`);
+			if (c.includes("fetch origin")) return "" as any;
+			if (c.includes("rev-parse")) return "tip-sha\n" as any;
+			if (c.includes("merge-base")) return "fork-sha\n" as any;
+			if (c.includes("rev-list --count")) return "2\n" as any;
+			throw new Error(`unexpected: ${c}`);
 		});
 
 		await gitService.checkBaseBranchDrift("/worktree/path", "develop");
@@ -199,6 +242,12 @@ describe("GitService.checkBaseBranchDrift", () => {
 			calls.some(
 				(c) =>
 					c.includes("rev-parse") && c.includes("refs/remotes/origin/develop"),
+			),
+		).toBe(true);
+		expect(
+			calls.some(
+				(c) =>
+					c.includes("merge-base") && c.includes("refs/remotes/origin/develop"),
 			),
 		).toBe(true);
 	});
