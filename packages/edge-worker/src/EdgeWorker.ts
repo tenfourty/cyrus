@@ -144,6 +144,8 @@ import { ActivityPoster } from "./ActivityPoster.js";
 import { AgentSessionManager } from "./AgentSessionManager.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
+import { computeResumeBaseBranchDriftBlocks } from "./baseBranchDriftBlocks.js";
+import { formatBaseBranchUpdate } from "./baseBranchUpdate.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
@@ -1617,27 +1619,14 @@ export class EdgeWorker extends EventEmitter {
 			return;
 		}
 
-		// Build a notification prompt with commit summary
 		const commitCount = payload.commits.length;
-		const commitSummary = payload.commits
-			.slice(0, 5)
-			.map((c) => `- ${c.message.split("\n")[0]}`)
-			.join("\n");
-		const moreCommits =
-			commitCount > 5 ? `\n- ... and ${commitCount - 5} more` : "";
-
-		const notification = `<base_branch_update>
-<branch>${branchName}</branch>
-<repository>${repoFullName}</repository>
-<commit_count>${commitCount}</commit_count>
-<compare_url>${payload.compare}</compare_url>
-<commits>
-${commitSummary}${moreCommits}
-</commits>
-<guidance>
-Your base branch \`${branchName}\` has received ${commitCount} new commit(s). Consider rebasing your working branch onto the updated base to avoid merge conflicts. You can do this with: \`git fetch origin && git rebase origin/${branchName}\`
-</guidance>
-</base_branch_update>`;
+		const notification = formatBaseBranchUpdate({
+			branchName,
+			repository: repoFullName,
+			commitCount,
+			compareUrl: payload.compare,
+			commits: payload.commits.map((c) => c.message),
+		});
 
 		this.logger.info(
 			`Base branch ${branchName} updated (${commitCount} commits) — notifying ${sessions.length} active session(s)`,
@@ -7288,13 +7277,26 @@ ${input.userComment}
 		// Save state
 		await this.savePersistedState();
 
+		// On resume, surface base-branch drift the dormant session may have
+		// missed. The live GitHub-push path streams the same notification
+		// shape into running agents; here we fetch + diff and prepend any
+		// resulting blocks to the prompt body so the freshly-spawned runner
+		// sees the same XML.
+		const effectivePromptBody = isNewSession
+			? promptBody
+			: await this.prependBaseBranchDriftBlocks(
+					session,
+					repository,
+					promptBody,
+				);
+
 		// Prepare the full prompt
 		const fullPrompt = await this.buildSessionPrompt(
 			isNewSession,
 			session,
 			fullIssue,
 			repository,
-			promptBody,
+			effectivePromptBody,
 			attachmentManifest,
 			commentAuthor,
 			commentTimestamp,
@@ -7310,6 +7312,39 @@ ${input.userComment}
 		} catch (error) {
 			log.error(`Failed to start streaming session for ${sessionId}:`, error);
 			throw error;
+		}
+	}
+
+	/**
+	 * Prepend `<base_branch_update>` blocks for any participating repository
+	 * whose `origin/<base>` moved while this session was dormant. Used by
+	 * the resume path to deliver the same notification the live GitHub-push
+	 * webhook would have streamed if the runner had been alive.
+	 */
+	private async prependBaseBranchDriftBlocks(
+		session: CyrusAgentSession,
+		primaryRepo: RepositoryConfig,
+		promptBody: string,
+	): Promise<string> {
+		try {
+			const blocks = await computeResumeBaseBranchDriftBlocks({
+				session,
+				primaryRepo,
+				resolveRepo: (id) => this.repositories.get(id),
+				gitService: this.gitService,
+			});
+			if (blocks.length === 0) return promptBody;
+			this.logger.info(
+				`[base-branch-drift] Prepending ${blocks.length} <base_branch_update> block(s) to resume prompt for session ${session.id}`,
+			);
+			return `${blocks.join("\n\n")}\n\n${promptBody}`;
+		} catch (error) {
+			this.logger.warn(
+				`[base-branch-drift] drift check failed for session ${session.id} (non-fatal): ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return promptBody;
 		}
 	}
 

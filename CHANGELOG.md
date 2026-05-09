@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- Resumed sessions are now notified when their base branch moved while they were dormant, with the same rebase guidance the live push notification gives active sessions. Previously an agent resuming after a pause (for example, picking an issue back up after `main` advanced over the weekend) had no way to know its branch was behind and would only discover conflicts at PR time.
 
 ## [0.2.67] - 2026-07-25
 
