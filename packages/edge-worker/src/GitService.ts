@@ -277,27 +277,33 @@ export class GitService {
 	 * @param baseBranchOverride Optional override from [repo=name#branch] syntax (highest priority)
 	 */
 	/**
-	 * Detect base-branch drift since the last fetch in the given worktree.
+	 * Detect whether the worktree's HEAD is behind `origin/<base>` and, if so,
+	 * by how many commits.
 	 *
-	 * Strategy: capture `origin/<base>`'s SHA before and after fetching that
-	 * branch. If the SHA moved, count the new commits between the two SHAs
-	 * and return them. This is the cheapest way to identify "commits I just
-	 * learned about during this fetch" without persisted state — it ignores
-	 * divergence that already existed at session creation, so callers do not
-	 * notify the agent about base churn it has already seen.
+	 * Strategy: fetch the upstream branch, then ask git directly "how many
+	 * commits between the fork point and the upstream tip?" via
+	 * `merge-base HEAD origin/<base>` + `rev-list --count <fork>..origin/<base>`.
 	 *
-	 * Returns `null` when there is nothing to notify about: same SHA before
-	 * and after, missing local tracking ref (first-ever fetch), zero commits
-	 * between the two SHAs (defensive), or any git error (logged + swallowed
+	 * An earlier implementation used the SHA delta of origin/<base> across
+	 * the fetch ("commits this fetch advanced the ref"). That's correct for
+	 * a single-process stream of webhooks but wrong for resume on a busy
+	 * cyrus instance: parallel sessions, push webhooks, and other resumes
+	 * all run `git fetch origin` against the same bare repo, so by the time
+	 * a dormant session resumes, `origin/<base>` is already up-to-date in
+	 * the bare repo and the fetch is a no-op even though the worktree
+	 * branch is N commits behind. The merge-base/rev-list pair answers the
+	 * question we actually care about — "is this branch behind upstream?" —
+	 * and is unaffected by what other processes did to the bare repo.
+	 *
+	 * Returns `null` when there is nothing to report: branch is at or ahead
+	 * of upstream (`behind === 0`), upstream ref missing (deleted upstream),
+	 * no shared history with upstream, or any git error (logged + swallowed
 	 * because drift detection is best-effort and never blocks resume).
 	 */
 	async checkBaseBranchDrift(
 		worktreePath: string,
 		baseBranch: string,
 	): Promise<{ commitCount: number; branchName: string } | null> {
-		const ref = `refs/remotes/origin/${baseBranch}`;
-		const beforeSha = this.tryRevParse(worktreePath, ref);
-
 		try {
 			execSync(`git fetch origin "${baseBranch}"`, {
 				cwd: worktreePath,
@@ -312,15 +318,34 @@ export class GitService {
 			return null;
 		}
 
-		if (!beforeSha) return null;
+		const ref = `refs/remotes/origin/${baseBranch}`;
+		const upstreamTip = this.tryRevParse(worktreePath, ref);
+		if (!upstreamTip) return null;
 
-		const afterSha = this.tryRevParse(worktreePath, ref);
-		if (!afterSha || beforeSha === afterSha) return null;
+		const forkPoint = this.tryMergeBase(worktreePath, ref);
+		if (!forkPoint || forkPoint === upstreamTip) return null;
 
-		const count = this.tryRevListCount(worktreePath, beforeSha, afterSha);
-		if (count <= 0) return null;
+		const behind = this.tryRevListCount(worktreePath, forkPoint, upstreamTip);
+		if (behind <= 0) return null;
 
-		return { commitCount: count, branchName: baseBranch };
+		return { commitCount: behind, branchName: baseBranch };
+	}
+
+	private tryMergeBase(
+		worktreePath: string,
+		upstreamRef: string,
+	): string | null {
+		try {
+			const output = execSync(`git merge-base HEAD "${upstreamRef}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const sha = output.toString().trim();
+			return sha.length > 0 ? sha : null;
+		} catch {
+			return null;
+		}
 	}
 
 	private tryRevParse(worktreePath: string, ref: string): string | null {
