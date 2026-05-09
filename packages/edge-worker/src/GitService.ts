@@ -276,6 +276,85 @@ export class GitService {
 	 *
 	 * @param baseBranchOverride Optional override from [repo=name#branch] syntax (highest priority)
 	 */
+	/**
+	 * Detect base-branch drift since the last fetch in the given worktree.
+	 *
+	 * Strategy: capture `origin/<base>`'s SHA before and after fetching that
+	 * branch. If the SHA moved, count the new commits between the two SHAs
+	 * and return them. This is the cheapest way to identify "commits I just
+	 * learned about during this fetch" without persisted state — it ignores
+	 * divergence that already existed at session creation, so callers do not
+	 * notify the agent about base churn it has already seen.
+	 *
+	 * Returns `null` when there is nothing to notify about: same SHA before
+	 * and after, missing local tracking ref (first-ever fetch), zero commits
+	 * between the two SHAs (defensive), or any git error (logged + swallowed
+	 * because drift detection is best-effort and never blocks resume).
+	 */
+	async checkBaseBranchDrift(
+		worktreePath: string,
+		baseBranch: string,
+	): Promise<{ commitCount: number; branchName: string } | null> {
+		const ref = `refs/remotes/origin/${baseBranch}`;
+		const beforeSha = this.tryRevParse(worktreePath, ref);
+
+		try {
+			execSync(`git fetch origin "${baseBranch}"`, {
+				cwd: worktreePath,
+				stdio: "pipe",
+			});
+		} catch (error) {
+			this.logger.warn(
+				`[base-branch-drift] fetch origin ${baseBranch} failed in ${worktreePath}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return null;
+		}
+
+		if (!beforeSha) return null;
+
+		const afterSha = this.tryRevParse(worktreePath, ref);
+		if (!afterSha || beforeSha === afterSha) return null;
+
+		const count = this.tryRevListCount(worktreePath, beforeSha, afterSha);
+		if (count <= 0) return null;
+
+		return { commitCount: count, branchName: baseBranch };
+	}
+
+	private tryRevParse(worktreePath: string, ref: string): string | null {
+		try {
+			const output = execSync(`git rev-parse "${ref}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const sha = output.toString().trim();
+			return sha.length > 0 ? sha : null;
+		} catch {
+			return null;
+		}
+	}
+
+	private tryRevListCount(
+		worktreePath: string,
+		fromSha: string,
+		toSha: string,
+	): number {
+		try {
+			const output = execSync(`git rev-list --count "${fromSha}".."${toSha}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const parsed = Number.parseInt(output.toString().trim(), 10);
+			return Number.isFinite(parsed) ? parsed : 0;
+		} catch {
+			return 0;
+		}
+	}
+
 	async determineBaseBranch(
 		issue: Issue,
 		repository: RepositoryConfig,
