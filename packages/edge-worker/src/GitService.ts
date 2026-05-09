@@ -276,6 +276,110 @@ export class GitService {
 	 *
 	 * @param baseBranchOverride Optional override from [repo=name#branch] syntax (highest priority)
 	 */
+	/**
+	 * Detect whether the worktree's HEAD is behind `origin/<base>` and, if so,
+	 * by how many commits.
+	 *
+	 * Strategy: fetch the upstream branch, then ask git directly "how many
+	 * commits between the fork point and the upstream tip?" via
+	 * `merge-base HEAD origin/<base>` + `rev-list --count <fork>..origin/<base>`.
+	 *
+	 * An earlier implementation used the SHA delta of origin/<base> across
+	 * the fetch ("commits this fetch advanced the ref"). That's correct for
+	 * a single-process stream of webhooks but wrong for resume on a busy
+	 * cyrus instance: parallel sessions, push webhooks, and other resumes
+	 * all run `git fetch origin` against the same bare repo, so by the time
+	 * a dormant session resumes, `origin/<base>` is already up-to-date in
+	 * the bare repo and the fetch is a no-op even though the worktree
+	 * branch is N commits behind. The merge-base/rev-list pair answers the
+	 * question we actually care about — "is this branch behind upstream?" —
+	 * and is unaffected by what other processes did to the bare repo.
+	 *
+	 * Returns `null` when there is nothing to report: branch is at or ahead
+	 * of upstream (`behind === 0`), upstream ref missing (deleted upstream),
+	 * no shared history with upstream, or any git error (logged + swallowed
+	 * because drift detection is best-effort and never blocks resume).
+	 */
+	async checkBaseBranchDrift(
+		worktreePath: string,
+		baseBranch: string,
+	): Promise<{ commitCount: number; branchName: string } | null> {
+		try {
+			execSync(`git fetch origin "${baseBranch}"`, {
+				cwd: worktreePath,
+				stdio: "pipe",
+			});
+		} catch (error) {
+			this.logger.warn(
+				`[base-branch-drift] fetch origin ${baseBranch} failed in ${worktreePath}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return null;
+		}
+
+		const ref = `refs/remotes/origin/${baseBranch}`;
+		const upstreamTip = this.tryRevParse(worktreePath, ref);
+		if (!upstreamTip) return null;
+
+		const forkPoint = this.tryMergeBase(worktreePath, ref);
+		if (!forkPoint || forkPoint === upstreamTip) return null;
+
+		const behind = this.tryRevListCount(worktreePath, forkPoint, upstreamTip);
+		if (behind <= 0) return null;
+
+		return { commitCount: behind, branchName: baseBranch };
+	}
+
+	private tryMergeBase(
+		worktreePath: string,
+		upstreamRef: string,
+	): string | null {
+		try {
+			const output = execSync(`git merge-base HEAD "${upstreamRef}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const sha = output.toString().trim();
+			return sha.length > 0 ? sha : null;
+		} catch {
+			return null;
+		}
+	}
+
+	private tryRevParse(worktreePath: string, ref: string): string | null {
+		try {
+			const output = execSync(`git rev-parse "${ref}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const sha = output.toString().trim();
+			return sha.length > 0 ? sha : null;
+		} catch {
+			return null;
+		}
+	}
+
+	private tryRevListCount(
+		worktreePath: string,
+		fromSha: string,
+		toSha: string,
+	): number {
+		try {
+			const output = execSync(`git rev-list --count "${fromSha}".."${toSha}"`, {
+				cwd: worktreePath,
+				encoding: "utf-8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const parsed = Number.parseInt(output.toString().trim(), 10);
+			return Number.isFinite(parsed) ? parsed : 0;
+		} catch {
+			return 0;
+		}
+	}
+
 	async determineBaseBranch(
 		issue: Issue,
 		repository: RepositoryConfig,

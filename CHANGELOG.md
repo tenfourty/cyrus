@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Resumed sessions are notified when their base branch moved during dormancy.** When Cyrus resumes a session (user comment, auto-resume on startup, or manual re-ping), the worktree branch is now compared against the remote base branch before the agent is handed the prompt. If the worktree is behind `origin/<base>`, a `<base_branch_update>` block is prepended to the prompt with the new commit count and the same rebase guidance the live GitHub-push path streams to active sessions. Fixes the long-pause scenario where an agent picks up an issue Monday after `main` advanced over the weekend and only discovers conflicts at PR time. Multi-repo sessions check each participating worktree independently and emit one block per drifted repo. Detection uses `git merge-base HEAD origin/<base>` plus `git rev-list --count <fork>..origin/<base>`, which answers "is this branch behind upstream?" regardless of what other cyrus traffic has done to the bare repo's `origin/<base>` ref. The check is best-effort — any git failure logs a warning and falls through without blocking resume.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
