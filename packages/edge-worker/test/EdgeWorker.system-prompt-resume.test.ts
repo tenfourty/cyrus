@@ -32,6 +32,9 @@ vi.mock("cyrus-linear-event-transport");
 vi.mock("@linear/sdk");
 vi.mock("../src/SharedApplicationServer.js");
 vi.mock("../src/AgentSessionManager.js");
+vi.mock("../src/shouldAbortSpawn.js", () => ({
+	shouldAbortSpawn: vi.fn().mockReturnValue(null),
+}));
 vi.mock("cyrus-core", async (importOriginal) => {
 	const actual = (await importOriginal()) as any;
 	return {
