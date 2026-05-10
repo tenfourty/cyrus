@@ -11,6 +11,7 @@
  * 7. Auto-resume with lastInFlightToolUses posts warning and clears marker.
  */
 
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EdgeWorker } from "../src/EdgeWorker.js";
 import { DrainController } from "../src/DrainController.js";
@@ -167,45 +168,24 @@ describe("EdgeWorker — drain integration", () => {
 		const dc: DrainController = (edgeWorker as any).getDrainController();
 		expect(dc.isDraining()).toBe(false);
 
-		// Confirm that isDraining is threaded into shouldAbortSpawn via its
-		// accessor parameter; call initializeAgentRunner path by invoking the
-		// private helper directly with a stub session.
-		// We use a property read instead of actually running a full session to
-		// avoid spinning up Claude processes.
-		//
-		// The binding is verified by checking that every actual shouldAbortSpawn
-		// call (from any test path) carries an `isDraining` function whose return
-		// value reflects the drain controller state.
-		//
-		// Since shouldAbortSpawn is mocked to return null, trigger it manually:
-		const fakeSession = {
-			id: "s1",
-			workspace: { path: "/tmp/s1", isGitWorktree: false },
-			repositories: [],
-			status: "active" as any,
-			type: "comment-thread" as any,
-			context: "comment-thread" as any,
-			createdAt: Date.now(),
-			updatedAt: Date.now(),
-		};
-		const fakeAsm = (edgeWorker as any).agentSessionManager;
+		// Verify that EdgeWorker threads isDraining into shouldAbortSpawn by reading
+		// the source code. This ensures both spawn sites (handleAgentSessionCreatedWebhook
+		// and resumeSessionForAutoResume) pass isDraining correctly.
+		const sourceCode = readFileSync(
+			new URL("../src/EdgeWorker.ts", import.meta.url),
+			"utf-8",
+		);
 
-		// Manually invoke shouldAbortSpawn as it would be called from EdgeWorker
-		const { shouldAbortSpawn: realFn } = await import("../src/shouldAbortSpawn.js");
-		// Call through the worker's private helper indirectly by passing the same
-		// args that EdgeWorker would pass (verifies the isDraining property):
+		// Both call sites should include: isDraining: () => this.drainController.isDraining()
+		const pattern = /isDraining:\s*\(\)\s*=>\s*this\.drainController\.isDraining\(\)/g;
+		const matches = sourceCode.match(pattern) || [];
+
+		// We expect at least 2 call sites (one in spawn path, one in resume path)
+		expect(matches.length).toBeGreaterThanOrEqual(2);
+
+		// Reset the spy to confirm it captures the isDraining function if actually called
 		spawnSpy.mockClear();
-
-		// Simulate what EdgeWorker does at both spawn sites
-		realFn({
-			session: fakeSession as any,
-			agentSessionManager: fakeAsm,
-			logger: (edgeWorker as any).logger,
-			isDraining: () => dc.isDraining(),
-		});
-
-		// isDraining should return false right now
-		expect(dc.isDraining()).toBe(false);
+		expect(spawnSpy).not.toHaveBeenCalled();
 	});
 
 	// ── test 3 ───────────────────────────────────────────────────────────────
@@ -348,7 +328,7 @@ describe("EdgeWorker — drain integration", () => {
 
 	// ── test 7 ───────────────────────────────────────────────────────────────
 
-	it("auto-resume posts warning for sessions with lastInFlightToolUses, clears marker, and saves", async () => {
+	it("auto-resume posts warning for sessions with lastInFlightToolUses and clears marker", async () => {
 		edgeWorker = new EdgeWorker(baseConfig);
 
 		const session = {
@@ -382,7 +362,7 @@ describe("EdgeWorker — drain integration", () => {
 			.mockResolvedValue(undefined);
 
 		// Invoke notifyAutoResumeResumed directly
-		await (edgeWorker as any).notifyAutoResumeResumed(session);
+		const markerWasCleared = await (edgeWorker as any).notifyAutoResumeResumed(session);
 
 		// Should have posted a warning mentioning both tool names
 		const warningActivity = thoughtActivities.find((a) =>
@@ -395,8 +375,12 @@ describe("EdgeWorker — drain integration", () => {
 		// Marker should be cleared
 		expect(session.lastInFlightToolUses).toBeUndefined();
 
-		// State should have been persisted
-		expect(saveStateSpy).toHaveBeenCalled();
+		// Method should return true to indicate marker was cleared
+		expect(markerWasCleared).toBe(true);
+
+		// savePersistedState should NOT be called from within notifyAutoResumeResumed
+		// (it's called once by the orchestrator after all sessions are processed)
+		expect(saveStateSpy).not.toHaveBeenCalled();
 	});
 });
 

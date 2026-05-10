@@ -6418,6 +6418,8 @@ ${input.userComment}
 		const aggregateManager = this.getAnyAgentSessionManager();
 		if (!aggregateManager) return;
 
+		let markersCleared = false;
+
 		const orchestrator = new AutoResumeOrchestrator({
 			sessions: () => aggregateManager.getActiveSessions(),
 			repositoryFor: (session) => {
@@ -6431,7 +6433,10 @@ ${input.userComment}
 				await this.resumeSessionForAutoResume(session, aggregateManager);
 			},
 			notifyResumed: async (session) => {
-				await this.notifyAutoResumeResumed(session);
+				const markerWasCleared = await this.notifyAutoResumeResumed(session);
+				if (markerWasCleared) {
+					markersCleared = true;
+				}
 			},
 			notifyRetired: async (session, reason) => {
 				await this.notifyAutoResumeRetired(session, reason);
@@ -6463,6 +6468,12 @@ ${input.userComment}
 					.map(([reason, count]) => `${reason}=${count}`)
 					.join(", ")}`,
 			);
+		}
+
+		// Coalesce all marker clears into a single save to avoid N concurrent
+		// savePersistedState() calls when resuming multiple sessions concurrently.
+		if (markersCleared) {
+			await this.savePersistedState();
 		}
 	}
 
@@ -6550,11 +6561,13 @@ ${input.userComment}
 
 	private async notifyAutoResumeResumed(
 		session: CyrusAgentSession,
-	): Promise<void> {
+	): Promise<boolean> {
 		const repoId = session.repositories[0]?.repositoryId;
 		const repo = repoId ? this.repositories.get(repoId) : undefined;
-		if (!repo) return;
+		if (!repo) return false;
 		const workspaceId = requireLinearWorkspaceId(repo);
+
+		let markerWasCleared = false;
 
 		// If the previous run force-killed this session with in-flight tool uses,
 		// warn the operator so they know to verify those side-effects.
@@ -6567,17 +6580,18 @@ ${input.userComment}
 				workspaceId,
 				`⚠️ Cyrus restarted while these tool calls were running and may have partially completed: ${toolNames}. Verify before re-issuing.`,
 			);
-			// Clear the marker and persist so it doesn't re-fire on the next restart
+			// Clear the marker (caller will persist after orchestrator completes)
 			session.lastInFlightToolUses = undefined;
-			await this.savePersistedState();
+			markerWasCleared = true;
 		}
 
-		if (this.config.autoResume?.notifyOnResume === false) return;
+		if (this.config.autoResume?.notifyOnResume === false) return markerWasCleared;
 		await this.activityPoster.postThoughtActivity(
 			session.id,
 			workspaceId,
 			"Resumed after Cyrus restart. Conversation context preserved — continuing from the prior turn.",
 		);
+		return markerWasCleared;
 	}
 
 	private async notifyAutoResumeRetired(
