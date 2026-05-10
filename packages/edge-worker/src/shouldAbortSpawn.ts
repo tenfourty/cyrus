@@ -4,6 +4,7 @@ import type { CyrusAgentSession, ILogger } from "cyrus-core";
 export type SpawnAbortReason =
 	| "session-removed"
 	| "stop-requested"
+	| "draining"
 	| "worktree-missing";
 
 interface AgentSessionManagerLike {
@@ -15,6 +16,7 @@ export interface ShouldAbortSpawnInput {
 	session: CyrusAgentSession;
 	agentSessionManager: AgentSessionManagerLike;
 	logger: ILogger;
+	isDraining?: () => boolean;
 }
 
 /**
@@ -52,7 +54,7 @@ export interface ShouldAbortSpawnInput {
 export function shouldAbortSpawn(
 	input: ShouldAbortSpawnInput,
 ): SpawnAbortReason | null {
-	const { session, agentSessionManager, logger } = input;
+	const { session, agentSessionManager, logger, isDraining } = input;
 	const log = logger.withContext({ sessionId: session.id });
 
 	if (!agentSessionManager.getSession(session.id)) {
@@ -67,6 +69,13 @@ export function shouldAbortSpawn(
 			"Aborting runner spawn: stop was requested for this session before the runner could start",
 		);
 		return "stop-requested";
+	}
+
+	if (isDraining?.()) {
+		log.info(
+			"Aborting runner spawn: drain in progress, refusing to start new work",
+		);
+		return "draining";
 	}
 
 	const missing = findMissingWorktreePath(session);
