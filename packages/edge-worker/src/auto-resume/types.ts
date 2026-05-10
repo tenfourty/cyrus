@@ -6,7 +6,8 @@ export type SkipReason =
 	| "stale"
 	| "worktree-missing"
 	| "issue-state-changed"
-	| "hold-label";
+	| "hold-label"
+	| "status-not-active";
 
 export interface AutoResumeConfig {
 	concurrency: number;
