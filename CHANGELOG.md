@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Cyrus sessions can now maintain the auto-memory `MEMORY.md` index.** The broad home-directory Read deny (which protects `~/.claude.json` API tokens, session transcript JSONLs, and other home-dir secrets) silently caught the per-repo auto-memory directory under `~/.claude/projects/<encoded-repo-path>/memory/`, so agents successfully created new memory entry files (Write to a new path is fine) but could not Read+Edit the `MEMORY.md` index to add their pointer line — entries were left orphaned and invisible to future sessions. Sessions now carve out the per-repo auto-memory directory in the runner's `allowedDirectories`, computed by encoding the bare repository path the same way Claude Code does (each `/` and `.` becomes `-`, e.g. `/root/.cyrus/repos/repoA` → `~/.claude/projects/-root--cyrus-repos-repoA/memory/`). The deny still covers `~/.claude.json`, `~/.claude/agents`, every other project's directory, and the session transcript JSONLs that sit alongside the memory subdirectory.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
