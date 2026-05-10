@@ -13,7 +13,8 @@
  * cannot race their save+exit chains.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { DrainOutcome } from "cyrus-edge-worker";
 import { Application } from "./Application.js";
 
 function makeAppWithMockedShutdownDeps(): {
@@ -39,6 +40,15 @@ function makeAppWithMockedShutdownDeps(): {
 			stopCalls.count += 1;
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}),
+		getDrainController: vi.fn(() => ({
+			beginDrain: vi.fn().mockResolvedValue({
+				kind: "drained",
+				durationMs: 0,
+				sessionCount: 0,
+			} satisfies DrainOutcome),
+			abortDrain: vi.fn(),
+			isDraining: vi.fn().mockReturnValue(false),
+		})),
 	};
 	(app as any).errorReporter = {
 		flush: vi.fn().mockResolvedValue(true),
@@ -50,6 +60,64 @@ function makeAppWithMockedShutdownDeps(): {
 	}) as never);
 
 	return { app, stopCalls };
+}
+
+/**
+ * Helper that builds an app with full drain/signal-handler mocks so we can
+ * emit synthetic SIGTERM / SIGINT / uncaughtException events via
+ * process.emit().
+ */
+function makeAppWithSignalHandlers(): {
+	app: Application;
+	stopFn: ReturnType<typeof vi.fn>;
+	beginDrainFn: ReturnType<typeof vi.fn>;
+	abortDrainFn: ReturnType<typeof vi.fn>;
+	isDrainingFn: ReturnType<typeof vi.fn>;
+} {
+	const app = Object.create(Application.prototype) as Application;
+
+	const logger = {
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+		withContext: () => logger,
+	};
+	(app as any).logger = logger;
+	(app as any).envWatcher = undefined;
+	(app as any).configWatcher = undefined;
+	(app as any).shutdownPromise = undefined;
+	(app as any).sigtermCount = 0;
+
+	const stopFn = vi.fn().mockResolvedValue(undefined);
+	const beginDrainFn = vi.fn().mockResolvedValue({
+		kind: "drained",
+		durationMs: 100,
+		sessionCount: 0,
+	} satisfies DrainOutcome);
+	const abortDrainFn = vi.fn();
+	const isDrainingFn = vi.fn().mockReturnValue(false);
+
+	(app as any).worker = {
+		stop: stopFn,
+		getDrainController: vi.fn(() => ({
+			beginDrain: beginDrainFn,
+			abortDrain: abortDrainFn,
+			isDraining: isDrainingFn,
+		})),
+	};
+	(app as any).errorReporter = {
+		flush: vi.fn().mockResolvedValue(true),
+	};
+
+	vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {
+		// no-op
+	}) as never);
+
+	// Register signal handlers on this app instance.
+	app.setupSignalHandlers();
+
+	return { app, stopFn, beginDrainFn, abortDrainFn, isDrainingFn };
 }
 
 describe("Application.shutdown idempotency", () => {
@@ -81,5 +149,165 @@ describe("Application.shutdown idempotency", () => {
 		await app.shutdown();
 
 		expect(stopCalls.count).toBe(1);
+	});
+});
+
+describe("Application signal-handler drain behaviour", () => {
+	// Remove signal listeners installed by makeAppWithSignalHandlers after each
+	// test so tests don't bleed into each other.
+	afterEach(() => {
+		process.removeAllListeners("SIGTERM");
+		process.removeAllListeners("SIGINT");
+		process.removeAllListeners("uncaughtException");
+		process.removeAllListeners("unhandledRejection");
+		vi.restoreAllMocks();
+	});
+
+	it("first SIGTERM enters drain mode and awaits outcome before stopping worker", async () => {
+		const { stopFn, beginDrainFn } = makeAppWithSignalHandlers();
+
+		// Emit a synthetic SIGTERM — process.emit is synchronous so the handler
+		// fires inline; we then await all microtasks / timers with a small flush.
+		process.emit("SIGTERM");
+
+		// Flush microtasks so the async drain chain runs to completion.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(beginDrainFn).toHaveBeenCalledOnce();
+		expect(beginDrainFn).toHaveBeenCalledWith("sigterm");
+		// stop must be called AFTER beginDrain resolves, and with the outcome.
+		expect(stopFn).toHaveBeenCalledOnce();
+		const drainOutcome: DrainOutcome = {
+			kind: "drained",
+			durationMs: 100,
+			sessionCount: 0,
+		};
+		expect(stopFn).toHaveBeenCalledWith(drainOutcome);
+		expect(process.exit).toHaveBeenCalledWith(0);
+	});
+
+	it("second SIGTERM during drain calls abortDrain", async () => {
+		// Arrange: beginDrain never resolves (simulate in-flight drain)
+		const app = Object.create(Application.prototype) as Application;
+		const logger = {
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			debug: vi.fn(),
+			withContext: () => logger,
+		};
+		(app as any).logger = logger;
+		(app as any).envWatcher = undefined;
+		(app as any).configWatcher = undefined;
+		(app as any).shutdownPromise = undefined;
+		(app as any).sigtermCount = 0;
+
+		const abortDrainFn = vi.fn();
+		const neverResolvingBeginDrain = vi.fn(
+			() => new Promise<DrainOutcome>(() => {
+				// intentionally never resolves
+			}),
+		);
+
+		(app as any).worker = {
+			stop: vi.fn().mockResolvedValue(undefined),
+			getDrainController: vi.fn(() => ({
+				beginDrain: neverResolvingBeginDrain,
+				abortDrain: abortDrainFn,
+				isDraining: vi.fn().mockReturnValue(true),
+			})),
+		};
+		(app as any).errorReporter = { flush: vi.fn().mockResolvedValue(true) };
+
+		vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {}) as never);
+
+		app.setupSignalHandlers();
+
+		// First SIGTERM — enters drain; beginDrain will never resolve
+		process.emit("SIGTERM");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(neverResolvingBeginDrain).toHaveBeenCalledOnce();
+		expect(abortDrainFn).not.toHaveBeenCalled();
+
+		// Second SIGTERM — should abort drain
+		process.emit("SIGTERM");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(abortDrainFn).toHaveBeenCalledOnce();
+	});
+
+	it("SIGINT bypasses drain entirely and shuts down immediately", async () => {
+		const { stopFn, beginDrainFn } = makeAppWithSignalHandlers();
+
+		process.emit("SIGINT");
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(beginDrainFn).not.toHaveBeenCalled();
+		expect(stopFn).toHaveBeenCalledOnce();
+		// SIGINT calls shutdown() → performShutdown(undefined) → worker.stop(undefined)
+		expect(stopFn).toHaveBeenCalledWith(undefined);
+		expect(process.exit).toHaveBeenCalledWith(0);
+	});
+
+	it("uncaughtException bypasses drain entirely", async () => {
+		const { stopFn, beginDrainFn } = makeAppWithSignalHandlers();
+
+		process.emit("uncaughtException", new Error("test error"));
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(beginDrainFn).not.toHaveBeenCalled();
+		expect(stopFn).toHaveBeenCalledOnce();
+		expect(process.exit).toHaveBeenCalledWith(1);
+	});
+
+	it("drain failure (beginDrain rejects) still proceeds to worker.stop and exit", async () => {
+		const app = Object.create(Application.prototype) as Application;
+		const logger = {
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			debug: vi.fn(),
+			withContext: () => logger,
+		};
+		(app as any).logger = logger;
+		(app as any).envWatcher = undefined;
+		(app as any).configWatcher = undefined;
+		(app as any).shutdownPromise = undefined;
+		(app as any).sigtermCount = 0;
+
+		const stopFn = vi.fn().mockResolvedValue(undefined);
+		const beginDrainFn = vi.fn().mockRejectedValue(new Error("controller bug"));
+
+		(app as any).worker = {
+			stop: stopFn,
+			getDrainController: vi.fn(() => ({
+				beginDrain: beginDrainFn,
+				abortDrain: vi.fn(),
+				isDraining: vi.fn().mockReturnValue(false),
+			})),
+		};
+		(app as any).errorReporter = { flush: vi.fn().mockResolvedValue(true) };
+
+		vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {}) as never);
+
+		app.setupSignalHandlers();
+
+		process.emit("SIGTERM");
+
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		// Error should be logged
+		expect(logger.error).toHaveBeenCalled();
+		// worker.stop must still be called (no outcome since drain failed)
+		expect(stopFn).toHaveBeenCalledOnce();
+		// process exits with 0 even after drain failure
+		expect(process.exit).toHaveBeenCalledWith(0);
 	});
 });
