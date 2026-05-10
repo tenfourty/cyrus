@@ -9,6 +9,10 @@ export type {
 	StopHookInput,
 	WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
+export {
+	encodeClaudeProjectDirName,
+	getClaudeProjectAutoMemoryDir,
+} from "./auto-memory.js";
 export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
 export {
 	availableTools,

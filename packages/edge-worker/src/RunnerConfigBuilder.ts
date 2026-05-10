@@ -1,13 +1,14 @@
 import { execSync } from "node:child_process";
-import type {
-	HookCallbackMatcher,
-	HookEvent,
-	McpServerConfig,
-	PostToolUseHookInput,
-	SandboxSettings,
-	SDKMessage,
-	SdkPluginConfig,
-	StopHookInput,
+import {
+	getClaudeProjectAutoMemoryDir,
+	type HookCallbackMatcher,
+	type HookEvent,
+	type McpServerConfig,
+	type PostToolUseHookInput,
+	type SandboxSettings,
+	type SDKMessage,
+	type SdkPluginConfig,
+	type StopHookInput,
 } from "cyrus-claude-runner";
 import type {
 	AgentRunnerConfig,
@@ -116,6 +117,31 @@ export interface IssueRunnerConfigInput {
 	sandboxSettings?: SandboxSettings;
 	/** CA cert path for MITM TLS termination — passed via child process env */
 	egressCaCertPath?: string;
+}
+
+/**
+ * Append the Claude auto-memory directory for the given repository to an
+ * `allowedDirectories` list, deduplicating if a caller already added it.
+ *
+ * Auto-memory is anchored at the bare repo path
+ * (`repository.repositoryPath`), not the worktree — Claude Code encodes the
+ * bare repo path into `~/.claude/projects/<encoded>/`, so all worktrees of
+ * one repo share one memory directory.
+ *
+ * Without this carve-out, the home-directory Read deny built from cwd +
+ * allowedDirectories suppresses access to MEMORY.md and entry files,
+ * leaving newly-created memory entries orphaned because agents cannot
+ * Read+Edit the index file to add their pointer line.
+ */
+export function withAutoMemoryAllowedDirectory(
+	allowedDirectories: readonly string[],
+	repositoryPath: string,
+): string[] {
+	const memoryDir = getClaudeProjectAutoMemoryDir(repositoryPath);
+	if (allowedDirectories.includes(memoryDir)) {
+		return [...allowedDirectories];
+	}
+	return [...allowedDirectories, memoryDir];
 }
 
 /**
@@ -281,6 +307,17 @@ export class RunnerConfigBuilder {
 			input.repository,
 		);
 
+		// Carve out the per-repo Claude auto-memory directory so the broad
+		// home-directory Read deny (built by ClaudeRunner from cwd +
+		// allowedDirectories) does not suppress access to the session's
+		// MEMORY.md and entry files. Without this, agents successfully
+		// create new memory entry files (Write to a new path is fine) but
+		// cannot Read+Edit the index, leaving entries orphaned.
+		const allowedDirectoriesWithMemory = withAutoMemoryAllowedDirectory(
+			input.allowedDirectories,
+			input.repository.repositoryPath,
+		);
+
 		const config: AgentRunnerConfig & Record<string, unknown> = {
 			workingDirectory: resolveSessionWorkingDirectory(
 				input.session,
@@ -288,7 +325,7 @@ export class RunnerConfigBuilder {
 			),
 			allowedTools: input.allowedTools,
 			disallowedTools: input.disallowedTools,
-			allowedDirectories: input.allowedDirectories,
+			allowedDirectories: allowedDirectoriesWithMemory,
 			workspaceName: input.session.issue?.identifier || input.session.issueId,
 			cyrusHome: input.cyrusHome,
 			mcpConfigPath,
