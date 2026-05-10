@@ -6,7 +6,12 @@ import {
 	NoopErrorReporter,
 	type RepositoryConfig,
 } from "cyrus-core";
-import { GitService, SharedApplicationServer, type DrainOutcome, type DrainTrigger } from "cyrus-edge-worker";
+import {
+	type DrainOutcome,
+	type DrainTrigger,
+	GitService,
+	SharedApplicationServer,
+} from "cyrus-edge-worker";
 import dotenv from "dotenv";
 import { DEFAULT_SERVER_PORT, parsePort } from "./config/constants.js";
 import { ConfigService } from "./services/ConfigService.js";

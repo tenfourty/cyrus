@@ -1,6 +1,11 @@
 import { getCyrusAppUrl } from "cyrus-cloudflare-tunnel-client";
 import type { EdgeWorkerConfig, Issue, RepositoryConfig } from "cyrus-core";
-import type { DrainController, DrainOutcome, GitService, SharedApplicationServer } from "cyrus-edge-worker";
+import type {
+	DrainController,
+	DrainOutcome,
+	GitService,
+	SharedApplicationServer,
+} from "cyrus-edge-worker";
 import { EdgeWorker } from "cyrus-edge-worker";
 import { SlackEventTransport } from "cyrus-slack-event-transport";
 import { DEFAULT_SERVER_PORT, parsePort } from "../config/constants.js";

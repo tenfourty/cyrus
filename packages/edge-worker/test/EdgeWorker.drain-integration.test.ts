@@ -13,10 +13,10 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EdgeWorker } from "../src/EdgeWorker.js";
 import { DrainController } from "../src/DrainController.js";
-import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
 import type { DrainOutcome } from "../src/drainTypes.js";
+import { EdgeWorker } from "../src/EdgeWorker.js";
+import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
 
 // ── global mocks ────────────────────────────────────────────────────────────
 
@@ -177,7 +177,8 @@ describe("EdgeWorker — drain integration", () => {
 		);
 
 		// Both call sites should include: isDraining: () => this.drainController.isDraining()
-		const pattern = /isDraining:\s*\(\)\s*=>\s*this\.drainController\.isDraining\(\)/g;
+		const pattern =
+			/isDraining:\s*\(\)\s*=>\s*this\.drainController\.isDraining\(\)/g;
 		const matches = sourceCode.match(pattern) || [];
 
 		// We expect at least 2 call sites (one in spawn path, one in resume path)
@@ -200,8 +201,12 @@ describe("EdgeWorker — drain integration", () => {
 		// Capture handlers by calling registerDrainEndpoints directly
 		const capturedPost: Map<string, any> = new Map();
 		const capturedGet: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) => capturedPost.set(path, handler));
-		mockGetFn.mockImplementation((path: string, handler: any) => capturedGet.set(path, handler));
+		mockPostFn.mockImplementation((path: string, handler: any) =>
+			capturedPost.set(path, handler),
+		);
+		mockGetFn.mockImplementation((path: string, handler: any) =>
+			capturedGet.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -212,7 +217,9 @@ describe("EdgeWorker — drain integration", () => {
 		await adminDrainHandler({}, reply);
 
 		expect(reply.status).toHaveBeenCalledWith(409);
-		expect(reply.send).toHaveBeenCalledWith({ error: "drain-already-in-progress" });
+		expect(reply.send).toHaveBeenCalledWith({
+			error: "drain-already-in-progress",
+		});
 	});
 
 	// ── test 4 ───────────────────────────────────────────────────────────────
@@ -222,11 +229,17 @@ describe("EdgeWorker — drain integration", () => {
 
 		const dc: DrainController = (edgeWorker as any).getDrainController();
 		vi.spyOn(dc, "isDraining").mockReturnValue(false);
-		vi.spyOn(dc, "beginDrain").mockResolvedValue({ kind: "drained", durationMs: 0, sessionCount: 0 });
+		vi.spyOn(dc, "beginDrain").mockResolvedValue({
+			kind: "drained",
+			durationMs: 0,
+			sessionCount: 0,
+		});
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
 		const capturedPost: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) => capturedPost.set(path, handler));
+		mockPostFn.mockImplementation((path: string, handler: any) =>
+			capturedPost.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -261,7 +274,9 @@ describe("EdgeWorker — drain integration", () => {
 		vi.spyOn(dc, "getStatus").mockReturnValue(fakeStatus);
 
 		const capturedGet: Map<string, any> = new Map();
-		mockGetFn.mockImplementation((path: string, handler: any) => capturedGet.set(path, handler));
+		mockGetFn.mockImplementation((path: string, handler: any) =>
+			capturedGet.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -298,9 +313,11 @@ describe("EdgeWorker — drain integration", () => {
 
 		// Patch savePersistedState to capture state at save time
 		let capturedSession: any = null;
-		vi.spyOn(edgeWorker as any, "savePersistedState").mockImplementation(async () => {
-			capturedSession = { ...mockSessionMap.get("s1") };
-		});
+		vi.spyOn(edgeWorker as any, "savePersistedState").mockImplementation(
+			async () => {
+				capturedSession = { ...mockSessionMap.get("s1") };
+			},
+		);
 
 		const forceKillOutcome: DrainOutcome = {
 			kind: "force-killed",
@@ -310,7 +327,11 @@ describe("EdgeWorker — drain integration", () => {
 					sessionId: "s1",
 					pendingToolUses: [
 						{ id: "tool1", name: "Bash", startedAt: Date.now() - 5000 },
-						{ id: "tool2", name: "mcp__linear__save_comment", startedAt: Date.now() - 3000 },
+						{
+							id: "tool2",
+							name: "mcp__linear__save_comment",
+							startedAt: Date.now() - 3000,
+						},
 					],
 				},
 			],
@@ -322,8 +343,12 @@ describe("EdgeWorker — drain integration", () => {
 		expect(capturedSession.lastInFlightToolUses).toBeDefined();
 		expect(capturedSession.lastInFlightToolUses).toHaveLength(2);
 		expect(capturedSession.lastInFlightToolUses[0].name).toBe("Bash");
-		expect(capturedSession.lastInFlightToolUses[1].name).toBe("mcp__linear__save_comment");
-		expect(capturedSession.lastInFlightToolUses[0].killedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(capturedSession.lastInFlightToolUses[1].name).toBe(
+			"mcp__linear__save_comment",
+		);
+		expect(capturedSession.lastInFlightToolUses[0].killedAt).toMatch(
+			/^\d{4}-\d{2}-\d{2}T/,
+		);
 	});
 
 	// ── test 7 ───────────────────────────────────────────────────────────────
@@ -335,7 +360,11 @@ describe("EdgeWorker — drain integration", () => {
 			id: "resume-s1",
 			workspace: { path: "/tmp/resume-s1", isGitWorktree: false },
 			repositories: [{ repositoryId: "test-repo" }],
-			issueContext: { trackerId: "linear", issueId: "issue-1", issueIdentifier: "TEST-1" },
+			issueContext: {
+				trackerId: "linear",
+				issueId: "issue-1",
+				issueIdentifier: "TEST-1",
+			},
 			status: "active" as any,
 			type: "comment-thread" as any,
 			context: "comment-thread" as any,
@@ -350,11 +379,13 @@ describe("EdgeWorker — drain integration", () => {
 		// Capture calls to activityPoster.postThoughtActivity
 		const thoughtActivities: Array<{ sessionId: string; body: string }> = [];
 		(edgeWorker as any).activityPoster = {
-			postThoughtActivity: vi.fn().mockImplementation(
-				async (sessionId: string, _workspaceId: string, body: string) => {
-					thoughtActivities.push({ sessionId, body });
-				},
-			),
+			postThoughtActivity: vi
+				.fn()
+				.mockImplementation(
+					async (sessionId: string, _workspaceId: string, body: string) => {
+						thoughtActivities.push({ sessionId, body });
+					},
+				),
 		};
 
 		const saveStateSpy = vi
@@ -362,7 +393,9 @@ describe("EdgeWorker — drain integration", () => {
 			.mockResolvedValue(undefined);
 
 		// Invoke notifyAutoResumeResumed directly
-		const markerWasCleared = await (edgeWorker as any).notifyAutoResumeResumed(session);
+		const markerWasCleared = await (edgeWorker as any).notifyAutoResumeResumed(
+			session,
+		);
 
 		// Should have posted a warning mentioning both tool names
 		const warningActivity = thoughtActivities.find((a) =>
@@ -399,16 +432,10 @@ function getRegisteredPostHandler(
 	postFn: ReturnType<typeof vi.fn>,
 	path: string,
 ): ((req: any, reply: any) => Promise<any>) | undefined {
-	const calls = postFn.mock.calls as Array<[string, (req: any, reply: any) => Promise<any>]>;
+	const calls = postFn.mock.calls as Array<
+		[string, (req: any, reply: any) => Promise<any>]
+	>;
 	const match = calls.find(([p]) => p === path);
 	return match?.[1];
 }
 
-function getRegisteredGetHandler(
-	getFn: ReturnType<typeof vi.fn>,
-	path: string,
-): ((req: any, reply: any) => Promise<any>) | undefined {
-	const calls = getFn.mock.calls as Array<[string, (req: any, reply: any) => Promise<any>]>;
-	const match = calls.find(([p]) => p === path);
-	return match?.[1];
-}
