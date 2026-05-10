@@ -614,8 +614,7 @@ export class AgentSessionManager extends EventEmitter {
 							`Session terminating with ${remaining.size} unmatched pending tool_use id(s); treating as drainable. Ids: ${[...remaining].join(", ")}`,
 						);
 					}
-					this.pendingToolUseIdsBySession.delete(sessionId);
-					this.pendingToolUseMetadataBySession.delete(sessionId);
+					this.clearPendingToolUseTracking(sessionId);
 					this.emit("session_terminal", { sessionId });
 					await this.completeSession(sessionId, message as SDKResultMessage);
 					break;
@@ -1658,6 +1657,15 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Clear pending tool-use tracking for a session.
+	 * Called when a session is removed via any path (result, removeSession, cleanup).
+	 */
+	private clearPendingToolUseTracking(sessionId: string): void {
+		this.pendingToolUseIdsBySession.delete(sessionId);
+		this.pendingToolUseMetadataBySession.delete(sessionId);
+	}
+
+	/**
 	 * Remove a session and all associated tracking state.
 	 * Use for immediate cleanup when a session is permanently done
 	 * (e.g., issue moved to terminal state).
@@ -1673,6 +1681,7 @@ export class AgentSessionManager extends EventEmitter {
 		this.lastAssistantBodyBySession.delete(sessionId);
 		this.bufferedAssistantEntryBySession.delete(sessionId);
 		this.messageProcessingQueues.delete(sessionId);
+		this.clearPendingToolUseTracking(sessionId);
 		log.debug("Removed session");
 	}
 
@@ -1690,6 +1699,7 @@ export class AgentSessionManager extends EventEmitter {
 				const log = this.sessionLog(sessionId);
 				this.sessions.delete(sessionId);
 				this.entries.delete(sessionId);
+				this.clearPendingToolUseTracking(sessionId);
 				log.debug(`Cleaned up session`);
 			}
 		}

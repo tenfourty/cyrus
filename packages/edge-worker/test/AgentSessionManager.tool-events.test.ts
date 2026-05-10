@@ -282,4 +282,58 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		// After terminal, pending set should be cleared
 		expect(manager.getPendingToolUseIds(sessionId).size).toBe(0);
 	});
+
+	it("clears pending tool-use tracking when removeSession is called", async () => {
+		// arrange: emit a tool_use, do not emit tool_result, do not emit result
+		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_remove", "Bash", {}));
+		expect(manager.getPendingToolUseIds(sessionId).size).toBe(1);
+
+		// act: call removeSession
+		manager.removeSession(sessionId);
+
+		// assert: getPendingToolUseIds returns empty set for removed session
+		expect(manager.getPendingToolUseIds(sessionId).size).toBe(0);
+		expect(manager.getPendingToolUseDetails(sessionId)).toHaveLength(0);
+	});
+
+	it("clears pending tool-use tracking when cleanup() removes a session", async () => {
+		// arrange: create a session that is in "complete" state and old enough to be cleaned up
+		const oldSessionId = "old-session-cleanup";
+		const issueId2 = "issue-cleanup";
+
+		manager.createCyrusAgentSession(
+			oldSessionId,
+			issueId2,
+			{
+				id: issueId2,
+				identifier: "TEST-CLEAN-1",
+				title: "Cleanup test",
+				description: "",
+				branchName: "cleanup-branch",
+			},
+			{ path: "/tmp/workspace-cleanup", isGitWorktree: false },
+		);
+		manager.setActivitySink(oldSessionId, mockActivitySink);
+		const formatter = new ClaudeMessageFormatter();
+		const runnerStub = {
+			getFormatter: () => formatter,
+			constructor: { name: "ClaudeRunner" },
+		} as unknown as Parameters<typeof manager.addAgentRunner>[1];
+		manager.addAgentRunner(oldSessionId, runnerStub);
+
+		// emit a tool_use that will be orphaned
+		await manager.handleClaudeMessage(oldSessionId, buildToolUse("toolu_cleanup", "Bash", {}));
+		expect(manager.getPendingToolUseIds(oldSessionId).size).toBe(1);
+
+		// manually mark session as complete and force it to be old (manipulate internal state for test)
+		// by calling handleClaudeMessage with a result message
+		await manager.handleClaudeMessage(oldSessionId, buildResultMessage());
+
+		// Verify cleanup removes the session and its pending tool-use tracking
+		manager.cleanup(0); // olderThanMs=0 means cleanup everything that's complete/error
+
+		// assert: getPendingToolUseIds for the cleaned session returns empty set
+		expect(manager.getPendingToolUseIds(oldSessionId).size).toBe(0);
+		expect(manager.getPendingToolUseDetails(oldSessionId)).toHaveLength(0);
+	});
 });
