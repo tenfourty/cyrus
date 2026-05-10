@@ -182,6 +182,7 @@ import { resolveSiblingSkillPlugins } from "./resolveSiblingSkillPlugins.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
+import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
 import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
@@ -3197,14 +3198,28 @@ ${taskSection}`;
 
 		const issueId = message.workItemId;
 
-		// Stop all active sessions for this issue
+		// Stop all active sessions for this issue. A session may have been
+		// tracked but not yet had its runner attached (the trackSession →
+		// async-config-build → spawn handoff routinely takes 5–20s). For
+		// those, requestSessionStop sets the flag; the spawn-side check in
+		// `shouldAbortSpawn` then aborts before the SDK subprocess starts.
 		const sessions = this.agentSessionManager.getSessionsByIssueId(issueId);
+		let stoppedCount = 0;
+		let cancelledPendingCount = 0;
 		for (const session of sessions) {
-			this.logger.info(
-				`Stopping agent runner for ${message.workItemIdentifier} (issue terminal)`,
-			);
 			this.agentSessionManager.requestSessionStop(session.id);
-			session.agentRunner?.stop();
+			if (session.agentRunner) {
+				this.logger.info(
+					`Stopping agent runner for ${message.workItemIdentifier} (issue terminal)`,
+				);
+				session.agentRunner.stop();
+				stoppedCount++;
+			} else {
+				this.logger.info(
+					`Cancelling pending spawn for ${message.workItemIdentifier} (issue terminal, runner not yet attached)`,
+				);
+				cancelledPendingCount++;
+			}
 		}
 
 		// Post a response activity to each stopped session's Linear thread,
@@ -3235,7 +3250,7 @@ ${taskSection}`;
 		this.gitService.deleteWorktree(message.workItemIdentifier);
 
 		this.logger.info(
-			`Completed cleanup for ${message.workItemIdentifier}: stopped ${sessions.length} session(s)`,
+			`Completed cleanup for ${message.workItemIdentifier}: stopped ${stoppedCount} session(s), cancelled ${cancelledPendingCount} pending spawn(s)`,
 		);
 	}
 
@@ -4361,6 +4376,26 @@ ${taskSection}`;
 			log.debug(
 				`Label-based runner selection for new session: ${runnerType} (session ${sessionId})`,
 			);
+
+			// Pre-spawn check: bail if cleanup ran during the async config build.
+			// The trackSession → spawn handoff is asynchronous (config build,
+			// skill resolution, sandbox prep) and routinely takes 5–20s; an
+			// IssueStateChange cleanup that arrives in that window can remove
+			// the session record and `git worktree remove` the workspace.
+			// Without this check the runner would happily spawn into a deleted
+			// directory.
+			const abortReason = shouldAbortSpawn({
+				session,
+				agentSessionManager,
+				logger: this.logger,
+			});
+			if (abortReason) {
+				log.info(
+					`Skipping runner spawn (${abortReason}) — issue terminal cleanup ran during config build`,
+				);
+				await this.savePersistedState();
+				return;
+			}
 
 			const runner = this.createRunnerForType(runnerType, runnerConfig);
 
@@ -7011,6 +7046,24 @@ ${input.userComment}
 				undefined, // mcpOptions
 				resolvedWorkspaceId,
 			);
+
+		// Pre-spawn check: see resumeAgentSession's twin in the create path.
+		// Cleanup may have run while this resume's async config build was in
+		// flight; spawning past this point would attach a runner to a record
+		// the cleanup pipeline already removed (or worse, spawn a subprocess
+		// in a worktree that has since been `git worktree remove`d).
+		const abortReason = shouldAbortSpawn({
+			session,
+			agentSessionManager,
+			logger: this.logger,
+		});
+		if (abortReason) {
+			log.info(
+				`Skipping runner spawn on resume (${abortReason}) — issue terminal cleanup ran during config build`,
+			);
+			await this.savePersistedState();
+			return;
+		}
 
 		// Create the appropriate runner based on session state
 		const runner = this.createRunnerForType(runnerType, runnerConfig);
