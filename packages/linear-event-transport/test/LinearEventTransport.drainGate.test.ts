@@ -14,7 +14,10 @@ function makeReply() {
 	return reply;
 }
 
-function makeTransport(opts?: { verificationMode?: "proxy" | "direct"; secret?: string }) {
+function makeTransport(opts?: {
+	verificationMode?: "proxy" | "direct";
+	secret?: string;
+}) {
 	const post = vi.fn();
 	const fastifyServer = { post } as unknown as FastifyInstance;
 	const transport = new LinearEventTransport({
@@ -28,7 +31,9 @@ function makeTransport(opts?: { verificationMode?: "proxy" | "direct"; secret?: 
 
 /** Find the handler registered for /linear-webhook */
 function getLinearWebhookHandler(post: ReturnType<typeof vi.fn>) {
-	const calls = post.mock.calls as Array<[string, (req: any, reply: any) => Promise<void>]>;
+	const calls = post.mock.calls as Array<
+		[string, (req: any, reply: any) => Promise<void>]
+	>;
 	const found = calls.find(([path]) => path === "/linear-webhook");
 	if (!found) throw new Error("Handler for /linear-webhook not registered");
 	return found[1];
@@ -144,12 +149,24 @@ describe("LinearEventTransport — drain gate", () => {
 
 		// Non-stop webhook — should be 503
 		const normalReply = makeReply();
-		await handler(makeProxyRequest({ type: "AgentSession", agentActivity: { signal: null } }), normalReply);
+		await handler(
+			makeProxyRequest({
+				type: "AgentSession",
+				agentActivity: { signal: null },
+			}),
+			normalReply,
+		);
 		expect(normalReply.code).toHaveBeenCalledWith(503);
 
 		// Stop webhook — should be 200 and emitted
 		const stopReply = makeReply();
-		await handler(makeProxyRequest({ type: "AgentSession", agentActivity: { signal: "stop" } }), stopReply);
+		await handler(
+			makeProxyRequest({
+				type: "AgentSession",
+				agentActivity: { signal: "stop" },
+			}),
+			stopReply,
+		);
 		expect(stopReply.code).toHaveBeenCalledWith(200);
 		expect(emittedStop).toHaveLength(1);
 		expect(emittedOther).toHaveLength(0);

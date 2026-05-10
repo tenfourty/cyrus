@@ -1,5 +1,5 @@
-import type { ILogger } from "cyrus-core";
 import type { EventEmitter } from "node:events";
+import type { ILogger } from "cyrus-core";
 import type {
 	DrainConfig,
 	DrainOutcome,
@@ -33,7 +33,10 @@ export class DrainController {
 	private aborted = false;
 
 	constructor(private readonly input: DrainControllerInput) {
-		if (input.config.hardCapMs > 0 && input.config.perSessionCapMs > input.config.hardCapMs) {
+		if (
+			input.config.hardCapMs > 0 &&
+			input.config.perSessionCapMs > input.config.hardCapMs
+		) {
 			throw new Error(
 				`DrainController: perSessionCapMs (${input.config.perSessionCapMs}) must be <= hardCapMs (${input.config.hardCapMs})`,
 			);
@@ -58,7 +61,9 @@ export class DrainController {
 
 		// Disabled drain (hardCapMs=0): immediately force-kill
 		if (this.input.config.hardCapMs === 0) {
-			log.warn("[DrainController] Drain disabled (hardCapMs=0); proceeding to immediate force-kill outcome");
+			log.warn(
+				"[DrainController] Drain disabled (hardCapMs=0); proceeding to immediate force-kill outcome",
+			);
 			const forced = this.snapshotForced();
 			this._state = "shutting-down";
 			this.outcomePromise = Promise.resolve({
@@ -69,14 +74,18 @@ export class DrainController {
 			return this.outcomePromise;
 		}
 
-		log.info(`[DrainController] Drain started (trigger=${trigger}, hardCapMs=${this.input.config.hardCapMs})`);
+		log.info(
+			`[DrainController] Drain started (trigger=${trigger}, hardCapMs=${this.input.config.hardCapMs})`,
+		);
 
 		this.outcomePromise = new Promise<DrainOutcome>((resolve) => {
 			this.resolveOutcome = resolve;
 		});
 
 		// Snapshot active sessions at drain start
-		this.trackedSessions = new Set(this.input.agentSessionManager.getActiveAttachedSessionIds());
+		this.trackedSessions = new Set(
+			this.input.agentSessionManager.getActiveAttachedSessionIds(),
+		);
 
 		// Arm per-session timers
 		for (const sid of this.trackedSessions) {
@@ -84,11 +93,20 @@ export class DrainController {
 		}
 
 		// Subscribe to lifecycle events
-		this.input.agentSessionManager.on("session_terminal", this.onSessionTerminal);
-		this.input.agentSessionManager.on("tool_use_completed", this.onToolUseCompleted);
+		this.input.agentSessionManager.on(
+			"session_terminal",
+			this.onSessionTerminal,
+		);
+		this.input.agentSessionManager.on(
+			"tool_use_completed",
+			this.onToolUseCompleted,
+		);
 
 		// Arm hard cap timer
-		this.hardCapTimer = setTimeout(() => this.onHardCapExpired(), this.input.config.hardCapMs);
+		this.hardCapTimer = setTimeout(
+			() => this.onHardCapExpired(),
+			this.input.config.hardCapMs,
+		);
 
 		// Initial evaluation — may already be drainable (e.g. no sessions)
 		this.evaluate();
@@ -99,7 +117,9 @@ export class DrainController {
 	abortDrain(): void {
 		if (this._state !== "draining") return;
 		this.aborted = true;
-		this.input.logger.warn("[DrainController] Drain aborted by second signal — proceeding to immediate shutdown");
+		this.input.logger.warn(
+			"[DrainController] Drain aborted by second signal — proceeding to immediate shutdown",
+		);
 		const forced = this.snapshotForced();
 		this.cleanup();
 		this._state = "shutting-down";
@@ -117,10 +137,14 @@ export class DrainController {
 		const sessions: DrainSessionStatus[] = [];
 
 		for (const sid of this.trackedSessions) {
-			const pending = this.input.agentSessionManager.getPendingToolUseDetails(sid);
+			const pending =
+				this.input.agentSessionManager.getPendingToolUseDetails(sid);
 			const ageMs = this.startedAt ? now - this.startedAt : 0;
 			const perSessionRemaining = this.startedAt
-				? Math.max(0, this.input.config.perSessionCapMs - (now - this.startedAt))
+				? Math.max(
+						0,
+						this.input.config.perSessionCapMs - (now - this.startedAt),
+					)
 				: this.input.config.perSessionCapMs;
 
 			sessions.push({
@@ -149,7 +173,11 @@ export class DrainController {
 		this.markSessionDone(ev.sessionId);
 	};
 
-	private onToolUseCompleted = (ev: { sessionId: string; toolUseId: string; isError: boolean }) => {
+	private onToolUseCompleted = (ev: {
+		sessionId: string;
+		toolUseId: string;
+		isError: boolean;
+	}) => {
 		if (!this.trackedSessions.has(ev.sessionId)) return;
 		this.evaluate();
 	};
@@ -183,7 +211,9 @@ export class DrainController {
 		// Check if all tracked sessions have empty pending tool-use sets
 		let allEmpty = true;
 		for (const sid of this.trackedSessions) {
-			if (this.input.agentSessionManager.getPendingToolUseDetails(sid).length > 0) {
+			if (
+				this.input.agentSessionManager.getPendingToolUseDetails(sid).length > 0
+			) {
 				allEmpty = false;
 				break;
 			}
@@ -204,7 +234,7 @@ export class DrainController {
 	}
 
 	private onHardCapExpired(): void {
-		if (this._state !== "draining") return;  // already resolved by another path
+		if (this._state !== "draining") return; // already resolved by another path
 		this.input.logger.error(
 			`[DrainController] Hard cap (${this.input.config.hardCapMs}ms) hit during drain — force-killing remaining sessions`,
 		);
@@ -223,7 +253,8 @@ export class DrainController {
 	private snapshotForced(): ForcedSession[] {
 		const out: ForcedSession[] = [];
 		for (const sid of this.trackedSessions) {
-			const pending = this.input.agentSessionManager.getPendingToolUseDetails(sid);
+			const pending =
+				this.input.agentSessionManager.getPendingToolUseDetails(sid);
 			if (pending.length > 0) {
 				out.push({ sessionId: sid, pendingToolUses: pending });
 			}
@@ -236,8 +267,14 @@ export class DrainController {
 	}
 
 	private cleanup(): void {
-		this.input.agentSessionManager.off("session_terminal", this.onSessionTerminal);
-		this.input.agentSessionManager.off("tool_use_completed", this.onToolUseCompleted);
+		this.input.agentSessionManager.off(
+			"session_terminal",
+			this.onSessionTerminal,
+		);
+		this.input.agentSessionManager.off(
+			"tool_use_completed",
+			this.onToolUseCompleted,
+		);
 
 		if (this.hardCapTimer !== null) {
 			clearTimeout(this.hardCapTimer);
