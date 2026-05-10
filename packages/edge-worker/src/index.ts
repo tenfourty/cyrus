@@ -25,6 +25,9 @@ export type {
 } from "./ChatSessionHandler.js";
 export { ChatSessionHandler } from "./ChatSessionHandler.js";
 export { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
+export type { DrainControllerInput } from "./DrainController.js";
+export { DrainController } from "./DrainController.js";
+export type { DrainOutcome, DrainTrigger } from "./drainTypes.js";
 export { EdgeWorker } from "./EdgeWorker.js";
 export { EgressProxy } from "./EgressProxy.js";
 export type { CreateGitWorktreeOptions } from "./GitService.js";
@@ -61,9 +64,4 @@ export {
 	DEFAULT_BLOCK_MESSAGE,
 	UserAccessControl,
 } from "./UserAccessControl.js";
-
 export { WorktreeIncludeService } from "./WorktreeIncludeService.js";
-
-export type { DrainOutcome, DrainTrigger } from "./drainTypes.js";
-export { DrainController } from "./DrainController.js";
-export type { DrainControllerInput } from "./DrainController.js";
