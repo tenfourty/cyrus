@@ -5,7 +5,12 @@ import type {
 	RepoSetupHookEventHandler,
 	RepositoryConfig,
 } from "cyrus-core";
-import type { GitService, SharedApplicationServer } from "cyrus-edge-worker";
+import type {
+	DrainController,
+	DrainOutcome,
+	GitService,
+	SharedApplicationServer,
+} from "cyrus-edge-worker";
 import { EdgeWorker } from "cyrus-edge-worker";
 import { SlackEventTransport } from "cyrus-slack-event-transport";
 import { DEFAULT_SERVER_PORT, parsePort } from "../config/constants.js";
@@ -328,9 +333,25 @@ export class WorkerService {
 	}
 
 	/**
-	 * Stop the EdgeWorker
+	 * Get the DrainController from the active EdgeWorker.
+	 * Used by Application-level signal handlers to coordinate graceful drain.
 	 */
-	async stop(): Promise<void> {
+	getDrainController(): DrainController {
+		if (!this.edgeWorker) {
+			throw new Error("EdgeWorker is not running; cannot get DrainController");
+		}
+		return this.edgeWorker.getDrainController();
+	}
+
+	/**
+	 * Stop the EdgeWorker.
+	 *
+	 * @param forceKillOutcome - When a graceful drain ended in a force-kill or
+	 *   was aborted by a second signal, pass the DrainOutcome here so the
+	 *   EdgeWorker can persist lastInFlightToolUses markers before state is
+	 *   saved. Omit (or pass undefined) for clean shutdowns.
+	 */
+	async stop(forceKillOutcome?: DrainOutcome): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 
@@ -344,7 +365,7 @@ export class WorkerService {
 
 		// Stop edge worker (includes stopping shared application server and Cloudflare tunnel)
 		if (this.edgeWorker) {
-			await this.edgeWorker.stop();
+			await this.edgeWorker.stop(forceKillOutcome);
 		}
 
 		this.logger.info("Shutdown complete");

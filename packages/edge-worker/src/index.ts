@@ -63,3 +63,7 @@ export {
 } from "./UserAccessControl.js";
 
 export { WorktreeIncludeService } from "./WorktreeIncludeService.js";
+
+export type { DrainOutcome, DrainTrigger } from "./drainTypes.js";
+export { DrainController } from "./DrainController.js";
+export type { DrainControllerInput } from "./DrainController.js";

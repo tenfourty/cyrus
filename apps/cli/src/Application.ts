@@ -6,7 +6,7 @@ import {
 	NoopErrorReporter,
 	type RepositoryConfig,
 } from "cyrus-core";
-import { GitService, SharedApplicationServer } from "cyrus-edge-worker";
+import { GitService, SharedApplicationServer, type DrainOutcome, type DrainTrigger } from "cyrus-edge-worker";
 import dotenv from "dotenv";
 import { DEFAULT_SERVER_PORT, parsePort } from "./config/constants.js";
 import { ConfigService } from "./services/ConfigService.js";
@@ -30,6 +30,8 @@ export class Application {
 	private isInSetupWaitingMode = false;
 	private isInIdleMode = false;
 	private readonly envFilePath: string;
+	private sigtermCount = 0;
+	private drainShutdownPromise?: Promise<void>;
 
 	constructor(
 		public readonly cyrusHome: string,
@@ -318,7 +320,7 @@ export class Application {
 	/**
 	 * Handle graceful shutdown
 	 */
-	async shutdown(): Promise<void> {
+	async shutdown(outcome?: DrainOutcome): Promise<void> {
 		// Close .env file watcher
 		if (this.envWatcher) {
 			this.envWatcher.close();
@@ -329,7 +331,7 @@ export class Application {
 			this.configWatcher.close();
 		}
 
-		await this.worker.stop();
+		await this.worker.stop(outcome);
 
 		// Flush any buffered Sentry events before exiting
 		await this.errorReporter.flush(2000).catch(() => false);
@@ -338,17 +340,56 @@ export class Application {
 	}
 
 	/**
+	 * Drain-then-shutdown path: waits for in-flight tool uses to finish (up to
+	 * the drain caps) before calling shutdown(). Idempotent — a concurrent call
+	 * (e.g. a second SIGTERM after abortDrain has already resolved the drain)
+	 * reuses the in-flight promise rather than opening a second drain chain.
+	 */
+	private drainAndShutdown(trigger: DrainTrigger): Promise<void> {
+		if (this.drainShutdownPromise) return this.drainShutdownPromise;
+		this.drainShutdownPromise = (async () => {
+			let outcome: DrainOutcome | undefined;
+			try {
+				outcome = await this.worker.getDrainController().beginDrain(trigger);
+				this.logger.info(
+					`Drain finished (kind=${outcome.kind}, durationMs=${outcome.durationMs})`,
+				);
+			} catch (err) {
+				this.logger.error(
+					"DrainController threw; proceeding to immediate shutdown",
+					err as Error,
+				);
+			}
+			await this.shutdown(outcome);
+		})();
+		return this.drainShutdownPromise;
+	}
+
+	/**
 	 * Setup process signal handlers
 	 */
 	setupSignalHandlers(): void {
 		process.on("SIGINT", () => {
-			this.logger.info("\nReceived SIGINT, shutting down gracefully...");
+			this.logger.info("\nReceived SIGINT, shutting down immediately...");
 			void this.shutdown();
 		});
 
 		process.on("SIGTERM", () => {
-			this.logger.info("\nReceived SIGTERM, shutting down gracefully...");
-			void this.shutdown();
+			this.sigtermCount += 1;
+			if (this.sigtermCount === 1) {
+				this.logger.info("\nReceived SIGTERM, entering drain mode...");
+				void this.drainAndShutdown("sigterm");
+			} else {
+				this.logger.warn(
+					`\nReceived SIGTERM #${this.sigtermCount}, aborting drain and shutting down immediately`,
+				);
+				try {
+					this.worker.getDrainController().abortDrain();
+				} catch (err) {
+					this.logger.error("Error aborting drain", err as Error);
+				}
+				void this.shutdown();
+			}
 		});
 
 		// Handle uncaught exceptions and unhandled promise rejections.
