@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Auto-resume orchestrator now correctly picks up sessions that were mid-turn at the moment of restart.** Previously, sessions whose prior turn had completed before being re-prompted carried a stale `status: complete` in persistence — the resume path never flipped it back to `active` when a new comment arrived. The next persistence snapshot captured the stale value, so on restart the orchestrator's `status === active` filter silently skipped the session and the operator had to manually nudge the Linear thread to bring the agent back. The resume path now stamps `status = active` before any async work runs, so the field reflects reality from the moment the new turn begins.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed

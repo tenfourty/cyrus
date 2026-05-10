@@ -603,6 +603,36 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Mark a session as resuming.
+	 *
+	 * Sets `session.status = AgentSessionStatus.Active` and bumps `updatedAt`.
+	 * Called by `EdgeWorker.resumeAgentSession` at the top of the resume path
+	 * so the in-memory record (and the next persisted snapshot) reflects that
+	 * this session is mid-turn again. Without this, sessions whose previous
+	 * turn completed carry `status: Complete` forward through the new turn,
+	 * which makes `getActiveSessions()` (and therefore the auto-resume
+	 * orchestrator's session source) silently skip them after a restart that
+	 * happens mid-resume.
+	 *
+	 * No-op if the session record is unknown (we never resume what we don't
+	 * track) or already `Active`.
+	 */
+	markSessionResuming(sessionId: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		if (session.status === AgentSessionStatus.Active) {
+			session.updatedAt = Date.now();
+			return;
+		}
+		this.sessionLog(sessionId).info(
+			`Marking session as resuming: status ${session.status} → ${AgentSessionStatus.Active}`,
+		);
+		session.status = AgentSessionStatus.Active;
+		session.updatedAt = Date.now();
+		this.sessions.set(sessionId, session);
+	}
+
+	/**
 	 * Update session status and metadata
 	 */
 	private async updateSessionStatus(
