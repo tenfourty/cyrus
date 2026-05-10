@@ -70,6 +70,17 @@ export interface RepositoryContext {
 export interface CyrusAgentSession {
 	/** Unique session identifier (was linearAgentActivitySessionId in v2.0) */
 	id: string;
+	/**
+	 * Set when a graceful-drain hard cap (or 2nd SIGTERM) force-killed this
+	 * session while one or more tool calls were still in flight. The next
+	 * auto-resume reads this, posts a Linear warning so the agent/operator
+	 * knows which tool side-effects may have partially executed, then clears.
+	 */
+	lastInFlightToolUses?: Array<{
+		id: string;
+		name: string;
+		killedAt: string; // ISO 8601
+	}>;
 	/** External session ID from the issue tracker (e.g., Linear's AgentSession ID) */
 	externalSessionId?: string;
 	type: AgentSessionType.CommentThread;
