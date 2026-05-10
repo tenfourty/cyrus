@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- **Issue-terminal cleanup no longer races against in-progress agent session startup.** Webhook handling tracks the session synchronously but spawns the SDK subprocess asynchronously after a multi-step config build (5–20s in the wild). When an issue moved to a terminal state (Done / Canceled) during that window, the existing cleanup pipeline removed the session record and `git worktree remove`d the workspace — but the in-flight spawn ran to completion regardless, attaching a Claude session to a deleted directory and posting activity for work the user could never see. Each spawn site now runs a pre-flight check just before `runner.start()` that bails when the session was removed, a stop has been requested for it, or any participating worktree path is no longer on disk. The `IssueStateChange` cleanup log is also more accurate now: it reports `stopped N session(s), cancelled M pending spawn(s)` instead of conflating the two.
 
 ## [0.2.67] - 2026-07-25
 
