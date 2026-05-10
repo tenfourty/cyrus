@@ -18,6 +18,9 @@ vi.mock("node:fs", () => ({
 vi.mock("node:fs/promises", () => ({
 	mkdir: vi.fn(),
 	readFile: vi.fn(),
+	readdir: vi.fn().mockResolvedValue([]),
+	rename: vi.fn(),
+	unlink: vi.fn(),
 	writeFile: vi.fn(),
 }));
 

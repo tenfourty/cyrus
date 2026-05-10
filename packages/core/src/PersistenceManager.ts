@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	readdir,
+	readFile,
+	rename,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
 	CyrusAgentSession,
 	CyrusAgentSessionEntry,
@@ -85,6 +92,7 @@ export interface V3SerializableEdgeWorkerState {
 export class PersistenceManager {
 	private persistencePath: string;
 	private logger: ILogger;
+	private tmpFileCounter = 0;
 
 	constructor(persistencePath?: string, logger?: ILogger) {
 		this.persistencePath =
@@ -107,20 +115,54 @@ export class PersistenceManager {
 	}
 
 	/**
-	 * Save EdgeWorker state to disk (single file for all repositories)
+	 * Save EdgeWorker state to disk via a tmp file plus atomic rename.
+	 *
+	 * Why not a plain `writeFile`: that opens the target path with `O_TRUNC`
+	 * and writes synchronously. A process killed (SIGKILL, `process.exit`)
+	 * between truncate and write completion, or a sibling concurrent
+	 * `writeFile` to the same path, leaves an empty or partial file. We
+	 * observed this live on a busy VM during a `systemctl restart`: the
+	 * shutdown handler's save call raced with an in-flight onStateChange
+	 * save, `process.exit(0)` killed the second writer mid-write, and the
+	 * restarted process loaded an empty state — silently dropping every
+	 * in-flight session and defeating auto-resume.
+	 *
+	 * POSIX `rename()` is atomic on the same filesystem: readers see either
+	 * the old file or the fully-written new one, never a partial. The tmp
+	 * file lives in the same directory as the target so the rename never
+	 * crosses filesystems and falls back to non-atomic copy+unlink. The
+	 * `.tmp.<pid>` suffix scopes the tmp file to this process so multiple
+	 * cyrus instances (defense-in-depth — they shouldn't coexist) target
+	 * distinct tmp paths.
 	 */
 	async saveEdgeWorkerState(state: SerializableEdgeWorkerState): Promise<void> {
+		const stateFile = this.getEdgeWorkerStateFilePath();
+		// Per-call suffix avoids the ENOENT that two concurrent saves would
+		// otherwise hit at the rename step: writer A renames its tmp away,
+		// writer B then tries to rename a path that no longer exists. Each
+		// call writes its own tmp; whichever rename runs last wins.
+		this.tmpFileCounter += 1;
+		const tmpFile = `${stateFile}.tmp.${process.pid}.${this.tmpFileCounter}`;
 		try {
 			await this.ensurePersistenceDirectory();
-			const stateFile = this.getEdgeWorkerStateFilePath();
 			const stateData = {
 				version: PERSISTENCE_VERSION,
 				savedAt: new Date().toISOString(),
 				state,
 			};
-			await writeFile(stateFile, JSON.stringify(stateData, null, 2), "utf8");
+			await writeFile(tmpFile, JSON.stringify(stateData, null, 2), "utf8");
+			await rename(tmpFile, stateFile);
 		} catch (error) {
 			this.logger.error("Failed to save EdgeWorker state:", error);
+			// Best-effort cleanup — if the tmp file was created but the rename
+			// never ran, leaving it behind would accumulate `.tmp.<pid>` cruft
+			// across crashes. Failure to unlink (e.g. tmp file never created)
+			// is itself harmless and intentionally swallowed.
+			try {
+				await unlink(tmpFile);
+			} catch {
+				// nothing to clean up
+			}
 			throw error;
 		}
 	}
@@ -132,11 +174,26 @@ export class PersistenceManager {
 	async loadEdgeWorkerState(): Promise<SerializableEdgeWorkerState | null> {
 		try {
 			const stateFile = this.getEdgeWorkerStateFilePath();
+			// Best-effort cleanup of any `.tmp.<pid>` siblings left behind by a
+			// previous SIGKILL between writeFile and rename. Harmless if the
+			// directory does not exist or has no orphans.
+			await this.cleanupStaleTmpFiles(stateFile);
+
 			if (!existsSync(stateFile)) {
 				return null;
 			}
 
-			const stateData = JSON.parse(await readFile(stateFile, "utf8"));
+			const raw = await readFile(stateFile, "utf8");
+			// Defend against a zero-byte file produced by a crash mid-write under
+			// the pre-atomic implementation. A `JSON.parse("")` would throw and
+			// land in the catch below as "Failed to load EdgeWorker state:
+			// SyntaxError" — alarming and ambiguous. Treat empty as "nothing to
+			// resume from" and stay silent.
+			if (raw.trim().length === 0) {
+				return null;
+			}
+
+			const stateData = JSON.parse(raw);
 
 			// Validate state structure exists
 			if (!stateData.state) {
@@ -321,6 +378,35 @@ export class PersistenceManager {
 			// New field: empty repositories for migrated sessions
 			repositories: [],
 		} as SerializedCyrusAgentSession;
+	}
+
+	/**
+	 * Remove any leftover `.tmp.<pid>` siblings of the state file. These can
+	 * accumulate when a process is killed between `writeFile(tmpFile, ...)`
+	 * and `rename(tmpFile, stateFile)` in `saveEdgeWorkerState`. Best-effort:
+	 * any error is swallowed because failure to clean cruft must not block
+	 * loading.
+	 */
+	private async cleanupStaleTmpFiles(stateFile: string): Promise<void> {
+		try {
+			const dir = dirname(stateFile);
+			const baseName = basename(stateFile);
+			const tmpPrefix = `${baseName}.tmp.`;
+			const entries = await readdir(dir);
+			await Promise.all(
+				entries
+					.filter((name) => name.startsWith(tmpPrefix))
+					.map(async (name) => {
+						try {
+							await unlink(join(dir, name));
+						} catch {
+							// ignore — best-effort cleanup
+						}
+					}),
+			);
+		} catch {
+			// directory missing, permission error, etc. — best-effort cleanup
+		}
 	}
 
 	/**
