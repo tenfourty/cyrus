@@ -150,4 +150,29 @@ describe("shouldAbortSpawn", () => {
 		// short-circuit: subsequent checks don't run
 		expect(manager.isStopRequested).not.toHaveBeenCalled();
 	});
+
+	it("returns 'draining' when isDraining() returns true", () => {
+		const result = shouldAbortSpawn({
+			session: makeSession({
+				workspace: { path: tmpRoot, isGitWorktree: true },
+			}),
+			agentSessionManager: makeManagerStub({}),
+			logger: silentLogger,
+			isDraining: () => true,
+		});
+
+		expect(result).toBe("draining");
+	});
+
+	it("ignores draining accessor when undefined (back-compat)", () => {
+		const result = shouldAbortSpawn({
+			session: makeSession({
+				workspace: { path: tmpRoot, isGitWorktree: true },
+			}),
+			agentSessionManager: makeManagerStub({}),
+			logger: silentLogger,
+		});
+
+		expect(result).toBeNull();
+	});
 });
