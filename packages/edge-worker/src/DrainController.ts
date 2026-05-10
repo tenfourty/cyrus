@@ -103,7 +103,9 @@ export class DrainController {
 		const forced = this.snapshotForced();
 		this.cleanup();
 		this._state = "shutting-down";
-		this.resolveOutcome?.({
+		const resolve = this.resolveOutcome;
+		this.resolveOutcome = null;
+		resolve?.({
 			kind: "aborted-by-second-signal",
 			durationMs: this.elapsedMs(),
 			forcedSessions: forced,
@@ -147,7 +149,8 @@ export class DrainController {
 		this.markSessionDone(ev.sessionId);
 	};
 
-	private onToolUseCompleted = (_ev: { sessionId: string; toolUseId: string; isError: boolean }) => {
+	private onToolUseCompleted = (ev: { sessionId: string; toolUseId: string; isError: boolean }) => {
+		if (!this.trackedSessions.has(ev.sessionId)) return;
 		this.evaluate();
 	};
 
@@ -190,7 +193,9 @@ export class DrainController {
 			const sessionCount = this.trackedSessions.size;
 			this.cleanup();
 			this._state = "shutting-down";
-			this.resolveOutcome?.({
+			const resolve = this.resolveOutcome;
+			this.resolveOutcome = null;
+			resolve?.({
 				kind: "drained",
 				durationMs: this.elapsedMs(),
 				sessionCount,
@@ -199,13 +204,16 @@ export class DrainController {
 	}
 
 	private onHardCapExpired(): void {
+		if (this._state !== "draining") return;  // already resolved by another path
 		this.input.logger.error(
 			`[DrainController] Hard cap (${this.input.config.hardCapMs}ms) hit during drain — force-killing remaining sessions`,
 		);
 		const forced = this.snapshotForced();
 		this.cleanup();
 		this._state = "shutting-down";
-		this.resolveOutcome?.({
+		const resolve = this.resolveOutcome;
+		this.resolveOutcome = null;
+		resolve?.({
 			kind: "force-killed",
 			durationMs: this.elapsedMs(),
 			forcedSessions: forced,
