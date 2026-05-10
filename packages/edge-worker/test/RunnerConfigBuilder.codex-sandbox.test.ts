@@ -71,12 +71,18 @@ function buildCodexConfig(sandboxSettings?: Record<string, unknown>) {
 
 describe("RunnerConfigBuilder Codex sandbox plumbing", () => {
 	it("translates the egress sandbox into a Codex filesystem allow-list", () => {
-		// Plumbs both write (worktree) and read (worktree + allowed dirs) roots;
-		// the Codex runner turns these into a per-thread permission profile.
+		// Plumbs both write (worktree + auto-memory dir) and read (worktree +
+		// allowed dirs, including auto-memory) roots; the Codex runner turns
+		// these into a per-thread permission profile.
 		const config = buildCodexConfig({ enabled: true });
 		expect(config.sandboxSettings).toEqual({
-			allowWrite: ["/ws/root"],
-			allowRead: ["/ws/root", "/ws/root", "/repos/repo-a"],
+			allowWrite: ["/ws/root", "/tmp/cyrus-home/memory/repo-a"],
+			allowRead: [
+				"/ws/root",
+				"/ws/root",
+				"/repos/repo-a",
+				"/tmp/cyrus-home/memory/repo-a",
+			],
 		});
 	});
 

@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	HookCallbackMatcher,
@@ -183,6 +184,86 @@ export function resolveIssueMcpConfigPath(
 	}
 
 	return [...platformMcpConfigOverrides];
+}
+
+/**
+ * A repository id must be a single, unambiguous path segment: no slashes
+ * (which would let the id escape into an arbitrary subtree) and not the
+ * literal `.` or `..` (which would resolve to `cyrusHome` itself or its
+ * parent). Repository config can arrive over the config-update API, so this
+ * is treated as untrusted input, not merely a naming convention.
+ */
+const REPOSITORY_ID_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Resolve the Claude auto-memory directory for an issue session's
+ * repository: `<cyrusHome>/memory/<repository.id>`.
+ *
+ * Cyrus chooses this path itself and passes it to the runner as
+ * `autoMemoryDirectory` (the same mechanism `buildChatConfig` already uses
+ * for chat sessions' `<cyrusHome>/<platformName>-memory`), rather than
+ * letting the SDK pick its own default location under
+ * `~/.claude/projects/<encoded-cwd>/`. Two consequences:
+ *   - No path-encoding scheme to reproduce: Cyrus never needs to guess where
+ *     the SDK put the directory, because Cyrus dictated it.
+ *   - No need to carve a hole in the home-directory Read deny: the directory
+ *     lives under Cyrus's own `cyrusHome`, not `~/.claude`, so it never
+ *     overlaps with the sensitive tree that deny is protecting.
+ *
+ * Deliberately NOT under `<cyrusHome>/repos/`: that is the namespace
+ * `DEFAULT_REPOS_DIR` / `getDefaultReposDir()` (see `cyrus-core`) already
+ * uses for cloned repository checkouts, and it is relocatable via the
+ * `CYRUS_REPOS_DIR` env var. Repository ids are human-readable and
+ * frequently chosen to match the repo's own directory name (see
+ * `apps/cli/repositories.example.json`), so reusing `repos/` here would risk
+ * landing the memory directory *inside* an actual git checkout as
+ * `<clone>/memory` — polluting the working tree and making the directory
+ * eligible to be accidentally committed. Using a separate `memory/` root
+ * avoids the collision entirely and needs no knowledge of where clones live.
+ *
+ * Scoped by `repository.id` (the same identifier already used everywhere
+ * else — `EdgeWorker.repositories`, session bookkeeping — as the
+ * repository's canonical key) rather than `repositoryPath`, so every
+ * worktree of a given repo shares one memory directory and renaming the
+ * repo's on-disk path doesn't orphan existing memory.
+ *
+ * `repositoryId` is validated as a single path segment before being joined
+ * in: it can arrive over the config-update API, and an id like `"../.."`
+ * joined in unchecked would grant a sandbox `allowWrite` above `cyrusHome`.
+ * Throws a plain `Error` for an invalid id — callers must catch this and
+ * degrade gracefully (skip auto-memory for the session) rather than let a
+ * malformed id crash session startup.
+ */
+export function getIssueAutoMemoryDirectory(
+	cyrusHome: string,
+	repositoryId: string,
+): string {
+	if (
+		repositoryId === "." ||
+		repositoryId === ".." ||
+		!REPOSITORY_ID_SEGMENT_PATTERN.test(repositoryId)
+	) {
+		throw new Error(
+			`Cannot build an auto-memory directory for repository id ${JSON.stringify(repositoryId)}: ` +
+				"repository ids must be a single path segment matching " +
+				`${REPOSITORY_ID_SEGMENT_PATTERN} and not "." or "..".`,
+		);
+	}
+	return join(cyrusHome, "memory", repositoryId);
+}
+
+/**
+ * Append a directory to an `allowedDirectories` list, deduplicating if a
+ * caller already added it.
+ */
+function withAllowedDirectory(
+	allowedDirectories: readonly string[],
+	directory: string,
+): string[] {
+	if (allowedDirectories.includes(directory)) {
+		return [...allowedDirectories];
+	}
+	return [...allowedDirectories, directory];
 }
 
 /**
@@ -400,11 +481,49 @@ export class RunnerConfigBuilder {
 			input.session.workspace.repoPaths ?? {},
 		).filter((p): p is string => typeof p === "string" && p !== cwd);
 
+		// Per-repo auto-memory directory, scoped under cyrusHome (see
+		// getIssueAutoMemoryDirectory for why). Included in allowedDirectories
+		// so it stays out of the home-directory Read deny, and set as
+		// autoMemoryDirectory so the runner tells the SDK to actually use this
+		// path instead of picking its own default under ~/.claude/projects/.
+		//
+		// This is the single decision point for whether auto-memory is active
+		// for this session: computing the path, validating the repository id,
+		// and creating the directory all happen here together, and every
+		// downstream consumer (allowedDirectories, config.autoMemoryDirectory,
+		// the Claude sandbox allow-lists, the Codex sandboxSettings) is wired
+		// conditionally off this one `autoMemoryDirectory` value. Two things
+		// can make this `undefined` instead of a path — an invalid
+		// `repository.id` (see `getIssueAutoMemoryDirectory`) or a failed
+		// `mkdirSync` (e.g. permissions, or `cyrusHome` not being a directory)
+		// — and both must degrade to "no auto-memory for this session" rather
+		// than throw: a sandbox `allowWrite`/`allowRead` grant for a directory
+		// that was never actually created would be worse than no memory at
+		// all, and a malformed id must not crash session startup.
+		let autoMemoryDirectory: string | undefined;
+		try {
+			const candidateMemoryDirectory = getIssueAutoMemoryDirectory(
+				input.cyrusHome,
+				input.repository.id,
+			);
+			mkdirSync(candidateMemoryDirectory, { recursive: true });
+			autoMemoryDirectory = candidateMemoryDirectory;
+		} catch (err) {
+			log.warn(
+				`Skipping auto-memory for repository "${input.repository.id}": ${(err as Error).message}`,
+			);
+			autoMemoryDirectory = undefined;
+		}
+		const allowedDirectoriesWithMemory = autoMemoryDirectory
+			? withAllowedDirectory(input.allowedDirectories, autoMemoryDirectory)
+			: [...input.allowedDirectories];
+
 		const config: AgentRunnerConfig & Record<string, unknown> = {
 			workingDirectory: cwd,
 			allowedTools: input.allowedTools,
 			disallowedTools: input.disallowedTools,
-			allowedDirectories: input.allowedDirectories,
+			allowedDirectories: allowedDirectoriesWithMemory,
+			autoMemoryDirectory,
 			...(additionalDirectories.length > 0 && { additionalDirectories }),
 			workspaceName: input.session.issue?.identifier || input.session.issueId,
 			cyrusHome: input.cyrusHome,
@@ -434,7 +553,11 @@ export class RunnerConfigBuilder {
 			// - Pass CA cert path via env for MITM TLS termination
 			...(runnerType === "claude" &&
 				input.sandboxSettings &&
-				this.buildSandboxConfig(input)),
+				this.buildSandboxConfig(
+					input,
+					allowedDirectoriesWithMemory,
+					autoMemoryDirectory,
+				)),
 			// AskUserQuestion callback - only for Claude runner
 			...(runnerType === "claude" &&
 				input.createAskUserQuestionCallback && {
@@ -465,13 +588,20 @@ export class RunnerConfigBuilder {
 
 		// When the egress sandbox is enabled, give Codex the same filesystem
 		// posture Claude gets (see buildSandboxConfig): writes restricted to the
-		// worktree, reads restricted to the worktree + allowed directories (home
-		// is denied by omission). The Codex runner turns this into a per-thread
-		// app-server permission profile (read/write allow-list).
+		// worktree + auto-memory dir, reads restricted to the worktree +
+		// allowed directories, including auto-memory (home is denied by
+		// omission). The Codex runner turns this into a per-thread app-server
+		// permission profile (read/write allow-list).
 		if (runnerType === "codex" && input.sandboxSettings) {
 			config.sandboxSettings = {
-				allowWrite: [input.session.workspace.path],
-				allowRead: [input.session.workspace.path, ...input.allowedDirectories],
+				allowWrite: [
+					input.session.workspace.path,
+					...(autoMemoryDirectory ? [autoMemoryDirectory] : []),
+				],
+				allowRead: [
+					input.session.workspace.path,
+					...allowedDirectoriesWithMemory,
+				],
 			};
 		}
 
@@ -506,11 +636,27 @@ export class RunnerConfigBuilder {
 	/**
 	 * Build sandbox and env config for a Claude runner session.
 	 * Merges base sandbox settings with per-session filesystem restrictions
-	 * (worktree as the only writable directory) and passes the CA cert
-	 * for MITM TLS termination via additionalEnv instead of process.env.
+	 * (worktree + auto-memory dir as the only writable directories) and
+	 * passes the CA cert for MITM TLS termination via additionalEnv instead
+	 * of process.env.
+	 *
+	 * `allowedDirectories` and `autoMemoryDirectory` are passed explicitly
+	 * (rather than read off `input`) because they already include the
+	 * per-repo auto-memory directory computed in `buildIssueConfig` — using
+	 * `input.allowedDirectories` directly here would silently drop it from
+	 * the OS-level sandbox even though it's present in the tool-permission
+	 * layer's `allowedDirectories`, leaving MEMORY.md readable-by-Claude-Code
+	 * but unreadable at the OS level.
+	 *
+	 * `autoMemoryDirectory` is `undefined` when `buildIssueConfig` skipped
+	 * auto-memory for this session (invalid repository id, or the directory
+	 * couldn't be created) — in that case it is simply omitted from
+	 * `allowWrite` rather than granting a write path that was never created.
 	 */
 	private buildSandboxConfig(
 		input: IssueRunnerConfigInput,
+		allowedDirectories: readonly string[],
+		autoMemoryDirectory: string | undefined,
 	): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
 
@@ -528,12 +674,17 @@ export class RunnerConfigBuilder {
 					...input.sandboxSettings.filesystem,
 					// "." resolves to the cwd of the primary folder Claude is working in.
 					// See: https://code.claude.com/docs/en/settings#sandbox-path-prefixes
-					// allowedDirectories contains the attachments dir, repo paths, and git
-					// metadata dirs — all of which need OS-level read access alongside the worktree.
-					allowRead: [".", ...input.allowedDirectories],
+					// allowedDirectories contains the attachments dir, repo paths, git
+					// metadata dirs, and the per-repo auto-memory dir — all of which need
+					// OS-level read access alongside the worktree.
+					allowRead: [".", ...allowedDirectories],
 					denyRead: ["~/"],
-					// Restrict subprocess writes to the session worktree only
-					allowWrite: [input.session.workspace.path],
+					// Restrict subprocess writes to the session worktree and the
+					// auto-memory dir (where MEMORY.md and entry files get written).
+					allowWrite: [
+						input.session.workspace.path,
+						...(autoMemoryDirectory ? [autoMemoryDirectory] : []),
+					],
 				},
 			};
 		}

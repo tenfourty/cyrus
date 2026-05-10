@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Auto-memory entries created during issue sessions are now reliably indexed instead of sometimes becoming invisible to future sessions. Memory is stored in a dedicated per-repository location that Cyrus manages directly, so access to it no longer depends on guessing where Claude Code would have stored it by default. Home-directory access restrictions continue to apply everywhere else.
 
 ## [0.2.67] - 2026-07-25
 
