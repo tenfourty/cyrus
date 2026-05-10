@@ -40,8 +40,23 @@ import type {
 /**
  * Events emitted by AgentSessionManager
  */
-// biome-ignore lint/complexity/noBannedTypes: Empty events type (events removed in CYPACK-996 skill refactor)
-export type AgentSessionManagerEvents = {};
+export type AgentSessionManagerEvents = {
+	/** Fired when an assistant message containing a tool_use block is processed. */
+	tool_use_started: (event: {
+		sessionId: string;
+		toolUse: { id: string; name: string; startedAt: number };
+	}) => void;
+
+	/** Fired when the matching tool_result user message is processed. */
+	tool_use_completed: (event: {
+		sessionId: string;
+		toolUseId: string;
+		isError: boolean;
+	}) => void;
+
+	/** Fired when a result SDKMessage is processed (session is terminal). */
+	session_terminal: (event: { sessionId: string }) => void;
+};
 
 /**
  * Type-safe event emitter interface for AgentSessionManager
@@ -89,6 +104,12 @@ export class AgentSessionManager extends EventEmitter {
 	// deferred tools like ToolSearch, where a tool_use and its tool_result can
 	// arrive back-to-back in the same microtask batch).
 	private messageProcessingQueues: Map<string, Promise<void>> = new Map();
+	// Per-session pending tool_use tracking for drain support
+	private pendingToolUseIdsBySession = new Map<string, Set<string>>();
+	private pendingToolUseMetadataBySession = new Map<
+		string,
+		Map<string, { name: string; startedAt: number }>
+	>();
 	private getParentSessionId?: (childSessionId: string) => string | undefined;
 	private resumeParentSession?: (
 		parentSessionId: string,
@@ -545,6 +566,23 @@ export class AgentSessionManager extends EventEmitter {
 						message as SDKUserMessage,
 					);
 					await this.syncEntryToActivitySink(userEntry, sessionId);
+					// Emit tool_use_completed for drain tracking
+					const toolResultInfo = this.extractToolResultInfo(
+						message as SDKUserMessage,
+					);
+					if (toolResultInfo) {
+						const ids = this.pendingToolUseIdsBySession.get(sessionId);
+						const meta = this.pendingToolUseMetadataBySession.get(sessionId);
+						if (ids?.has(toolResultInfo.toolUseId)) {
+							ids.delete(toolResultInfo.toolUseId);
+							meta?.delete(toolResultInfo.toolUseId);
+							this.emit("tool_use_completed", {
+								sessionId,
+								toolUseId: toolResultInfo.toolUseId,
+								isError: toolResultInfo.isError,
+							});
+						}
+					}
 					break;
 				}
 
@@ -587,15 +625,50 @@ export class AgentSessionManager extends EventEmitter {
 							);
 						}
 					}
+					// Emit tool_use_started for drain tracking
+					const toolInfo = this.extractToolInfo(message as SDKAssistantMessage);
+					if (toolInfo) {
+						let ids = this.pendingToolUseIdsBySession.get(sessionId);
+						if (!ids) {
+							ids = new Set();
+							this.pendingToolUseIdsBySession.set(sessionId, ids);
+						}
+						let meta = this.pendingToolUseMetadataBySession.get(sessionId);
+						if (!meta) {
+							meta = new Map();
+							this.pendingToolUseMetadataBySession.set(sessionId, meta);
+						}
+						if (!ids.has(toolInfo.id)) {
+							const startedAt = Date.now();
+							ids.add(toolInfo.id);
+							meta.set(toolInfo.id, { name: toolInfo.name, startedAt });
+							this.emit("tool_use_started", {
+								sessionId,
+								toolUse: { id: toolInfo.id, name: toolInfo.name, startedAt },
+							});
+						}
+					}
 					break;
 				}
 
-				case "result":
+				case "result": {
 					// Result arrived: discard buffered entry (addResultEntry uses lastAssistantBodyBySession
 					// to post the content as a response activity)
 					this.bufferedAssistantEntryBySession.delete(sessionId);
+					// Warn if there are orphaned pending tool_use IDs (runner terminated
+					// before delivering matching tool_result — treat as drainable).
+					const remaining = this.pendingToolUseIdsBySession.get(sessionId);
+					if (remaining && remaining.size > 0) {
+						log.warn(
+							`Session terminating with ${remaining.size} unmatched pending tool_use id(s); treating as drainable. Ids: ${[...remaining].join(", ")}`,
+						);
+					}
+					this.pendingToolUseIdsBySession.delete(sessionId);
+					this.pendingToolUseMetadataBySession.delete(sessionId);
+					this.emit("session_terminal", { sessionId });
 					await this.completeSession(sessionId, message as SDKResultMessage);
 					break;
+				}
 
 				case "rate_limit_event":
 					this.handleRateLimitEvent(sessionId, message as SDKRateLimitEvent);
@@ -1478,6 +1551,45 @@ export class AgentSessionManager extends EventEmitter {
 	hasAgentRunner(sessionId: string): boolean {
 		const session = this.sessions.get(sessionId);
 		return session?.agentRunner !== undefined;
+	}
+
+	// -------------------------------------------------------------------------
+	// Drain-support query helpers
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Returns a snapshot Set of tool_use IDs that have been started but whose
+	 * matching tool_result has not yet been received for the given session.
+	 */
+	getPendingToolUseIds(sessionId: string): Set<string> {
+		return new Set(this.pendingToolUseIdsBySession.get(sessionId) ?? []);
+	}
+
+	/**
+	 * Returns metadata for each pending tool_use (id, name, startedAt timestamp).
+	 */
+	getPendingToolUseDetails(
+		sessionId: string,
+	): Array<{ id: string; name: string; startedAt: number }> {
+		const meta = this.pendingToolUseMetadataBySession.get(sessionId);
+		if (!meta) return [];
+		return Array.from(meta.entries()).map(([id, v]) => ({
+			id,
+			name: v.name,
+			startedAt: v.startedAt,
+		}));
+	}
+
+	/**
+	 * Returns the IDs of sessions that have an attached agent runner (i.e. an
+	 * active Claude/Codex/etc. subprocess is potentially in-flight).
+	 */
+	getActiveAttachedSessionIds(): string[] {
+		const ids: string[] = [];
+		for (const [id, session] of this.sessions.entries()) {
+			if (session.agentRunner) ids.push(id);
+		}
+		return ids;
 	}
 
 	/**
