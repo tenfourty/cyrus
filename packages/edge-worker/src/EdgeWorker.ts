@@ -138,6 +138,8 @@ import {
 import { Sessions, streamableHttp } from "fastify-mcp";
 import { ActivityPoster } from "./ActivityPoster.js";
 import { AgentSessionManager } from "./AgentSessionManager.js";
+import { DrainController, type DrainControllerInput } from "./DrainController.js";
+import { loadDrainConfigFromEnv, type DrainOutcome } from "./drainTypes.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
 import { AutoResumeOrchestrator } from "./auto-resume/AutoResumeOrchestrator.js";
@@ -183,6 +185,34 @@ import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
 import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
 import type { AgentSessionData, EdgeWorkerEvents } from "./types.js";
 import { UserAccessControl } from "./UserAccessControl.js";
+
+/**
+ * Returns true if a raw webhook payload appears to be an agentSessionPrompted
+ * event carrying a stop signal.  Used by the LinearEventTransport drain gate to
+ * allow stop signals through even while draining (so operators can cancel stuck
+ * sessions).
+ *
+ * Matches:
+ *   - Explicit `agentActivity.signal === "stop"` (Linear native stop signal)
+ *   - Text bodies that match the existing stop-request regex
+ */
+function looksLikeStopSignal(raw: unknown): boolean {
+	if (!raw || typeof raw !== "object") return false;
+	const payload = raw as Record<string, unknown>;
+	const agentActivity = payload.agentActivity as Record<string, unknown> | undefined;
+	if (!agentActivity) return false;
+
+	// Explicit stop signal field
+	if (agentActivity.signal === "stop") return true;
+
+	// Text stop request (mirrors regex in handleUserPromptedAgentActivity)
+	const body =
+		(agentActivity.content as Record<string, unknown> | undefined)?.body ?? "";
+	if (typeof body === "string" && /^\s*stop(\s+session|\s+working)?[\s.!?]*$/i.test(body)) {
+		return true;
+	}
+	return false;
+}
 
 export declare interface EdgeWorker {
 	on<K extends keyof EdgeWorkerEvents>(
@@ -259,6 +289,8 @@ export class EdgeWorker extends EventEmitter {
 	private webhookIpValidator: WebhookIpValidator;
 	/** Egress proxy for sandbox network traffic filtering and header injection */
 	private egressProxy: EgressProxy | null = null;
+	/** DrainController: coordinates graceful shutdown on SIGTERM */
+	private drainController!: DrainController;
 	/** Base SDK sandbox settings to pass to ClaudeRunner sessions (set when proxy starts) */
 	private sdkSandboxSettings:
 		| import("cyrus-claude-runner").SandboxSettings
@@ -584,7 +616,25 @@ export class EdgeWorker extends EventEmitter {
 			this.logger,
 		);
 
+		// Initialize DrainController for graceful shutdown coordination.
+		// AgentSessionManager extends EventEmitter and provides the required
+		// getActiveAttachedSessionIds / getPendingToolUseDetails methods — the
+		// `unknown` cast bridges the typed class to the lean interface expected
+		// by DrainControllerInput without importing the internal interface.
+		this.drainController = new DrainController({
+			agentSessionManager: this.agentSessionManager as unknown as DrainControllerInput["agentSessionManager"],
+			config: loadDrainConfigFromEnv(),
+			logger: this.logger,
+		});
+
 		// Components will be initialized and registered in start() method before server starts
+	}
+
+	/**
+	 * Expose DrainController for Application-level shutdown coordination.
+	 */
+	getDrainController(): DrainController {
+		return this.drainController;
 	}
 
 	/**
@@ -794,6 +844,14 @@ export class EdgeWorker extends EventEmitter {
 				this.handleError(error);
 			});
 
+			// Wire the drain gate so incoming webhooks are rejected during drain.
+			// Stop-signal payloads bypass the gate so operators can cancel stuck sessions.
+			this.linearEventTransport.setDrainGate((raw) => {
+				if (!this.drainController.isDraining()) return false;
+				if (looksLikeStopSignal(raw)) return false;
+				return true;
+			});
+
 			// Register the /linear-webhook endpoint (with /webhook retained as a deprecated alias)
 			this.linearEventTransport.register();
 
@@ -837,6 +895,9 @@ export class EdgeWorker extends EventEmitter {
 
 		// 5. Register /version endpoint for CLI version info
 		this.registerVersionEndpoint();
+
+		// 6. Register admin drain endpoints
+		this.registerDrainEndpoints();
 	}
 
 	/**
@@ -870,6 +931,46 @@ export class EdgeWorker extends EventEmitter {
 
 		this.logger.info("✅ Version endpoint registered");
 		this.logger.info("   Route: GET /version");
+	}
+
+	/**
+	 * Register admin drain endpoints.
+	 *
+	 * POST /admin/drain  — initiate a graceful drain.  Returns 202 or 409 if already draining.
+	 * GET  /admin/drain/status — return DrainController.getStatus().
+	 *
+	 * NOTE: These endpoints are currently unauthenticated.  The SharedApplicationServer
+	 * typically listens on localhost/tunnel only, but operators should confirm network
+	 * exposure before deploying to internet-facing hosts.
+	 */
+	private registerDrainEndpoints(): void {
+		const fastify = this.sharedApplicationServer.getFastifyInstance();
+
+		fastify.post("/admin/drain", async (_req, reply) => {
+			if (this.drainController.isDraining()) {
+				return reply.status(409).send({ error: "drain-already-in-progress" });
+			}
+			this.beginAdminDrain();
+			return reply.status(202).send({ state: "draining" });
+		});
+
+		fastify.get("/admin/drain/status", async (_req, reply) => {
+			return reply.status(200).send(this.drainController.getStatus());
+		});
+
+		this.logger.info("✅ Admin drain endpoints registered");
+		this.logger.info("   Routes: POST /admin/drain, GET /admin/drain/status");
+	}
+
+	/**
+	 * Start an admin-triggered drain.  After drain completes (or is force-killed),
+	 * raise SIGTERM so the existing Application.shutdown handler fires and the
+	 * process exits cleanly.  This avoids duplicating shutdown logic here.
+	 */
+	private beginAdminDrain(): void {
+		void this.drainController.beginDrain("admin-endpoint").then(() => {
+			process.kill(process.pid, "SIGTERM");
+		});
 	}
 
 	/**
@@ -2388,11 +2489,39 @@ ${taskSection}`;
 	}
 
 	/**
-	 * Stop the edge worker
+	 * Stop the edge worker.
+	 *
+	 * @param forceKillOutcome — When a graceful drain ended in a force-kill or
+	 *   was aborted by a second signal, pass the DrainOutcome here so we can
+	 *   persist `lastInFlightToolUses` markers before the state snapshot is
+	 *   written.  Omit (or pass undefined) for clean shutdowns.
 	 */
-	async stop(): Promise<void> {
+	async stop(forceKillOutcome?: DrainOutcome): Promise<void> {
 		// Stop config file watcher
 		await this.configManager.stop();
+
+		// If drain ended with in-flight tool uses, record markers on each
+		// affected session so the next auto-resume can warn the operator.
+		if (
+			forceKillOutcome &&
+			(forceKillOutcome.kind === "force-killed" ||
+				forceKillOutcome.kind === "aborted-by-second-signal")
+		) {
+			const killedAt = new Date().toISOString();
+			for (const forced of forceKillOutcome.forcedSessions) {
+				const session = this.agentSessionManager.getSession(forced.sessionId);
+				if (session) {
+					session.lastInFlightToolUses = forced.pendingToolUses.map((p) => ({
+						id: p.id,
+						name: p.name,
+						killedAt,
+					}));
+					this.logger.warn(
+						`[EdgeWorker] Persisting force-kill marker for session ${forced.sessionId} (${forced.pendingToolUses.length} in-flight tool(s))`,
+					);
+				}
+			}
+		}
 
 		try {
 			await this.savePersistedState();
@@ -4364,6 +4493,7 @@ ${taskSection}`;
 				session,
 				agentSessionManager,
 				logger: this.logger,
+				isDraining: () => this.drainController.isDraining(),
 			});
 			if (abortReason) {
 				log.info(
@@ -6421,11 +6551,28 @@ ${input.userComment}
 	private async notifyAutoResumeResumed(
 		session: CyrusAgentSession,
 	): Promise<void> {
-		if (this.config.autoResume?.notifyOnResume === false) return;
 		const repoId = session.repositories[0]?.repositoryId;
 		const repo = repoId ? this.repositories.get(repoId) : undefined;
 		if (!repo) return;
 		const workspaceId = requireLinearWorkspaceId(repo);
+
+		// If the previous run force-killed this session with in-flight tool uses,
+		// warn the operator so they know to verify those side-effects.
+		if (session.lastInFlightToolUses && session.lastInFlightToolUses.length > 0) {
+			const toolNames = session.lastInFlightToolUses
+				.map((t) => `\`${t.name}\``)
+				.join(", ");
+			await this.activityPoster.postThoughtActivity(
+				session.id,
+				workspaceId,
+				`⚠️ Cyrus restarted while these tool calls were running and may have partially completed: ${toolNames}. Verify before re-issuing.`,
+			);
+			// Clear the marker and persist so it doesn't re-fire on the next restart
+			session.lastInFlightToolUses = undefined;
+			await this.savePersistedState();
+		}
+
+		if (this.config.autoResume?.notifyOnResume === false) return;
 		await this.activityPoster.postThoughtActivity(
 			session.id,
 			workspaceId,
@@ -7001,6 +7148,7 @@ ${input.userComment}
 			session,
 			agentSessionManager,
 			logger: this.logger,
+			isDraining: () => this.drainController.isDraining(),
 		});
 		if (abortReason) {
 			log.info(
