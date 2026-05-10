@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Auto-resume orchestrator now reports non-active sessions in its skip log instead of silently dropping them.** Previously, the orchestrator's session source was `getActiveSessions()`, which filters by `status === Active`. Sessions whose status was stuck (e.g., a stale `complete` from before a status-on-resume bug fix) never reached the filter pipeline and were invisible in the journal. The orchestrator now sources every persisted session and routes the active-status check through a new `StatusActiveFilter` so non-active sessions show up in the run summary's `skipped` array with reason `status-not-active`. An operator scanning the journal can now tell the difference between "no in-flight work to resume" and "we have sessions whose status looks wrong."
+
 ### Fixed
 - **Auto-resume retire path no longer leaves orphans in state or spams cross-platform notification errors.** When the worktree-missing filter retired a session, the orchestrator only fired the user-facing "session retired" notification and never cleaned up the in-memory or persisted session record — so an orphan resurfaced at every restart, indefinitely. Additionally, the notification posted to Linear unconditionally; for GitLab and GitHub sessions (whose synthetic ids — e.g. `gitlab-<millis>` — are not UUIDs) Linear's GraphQL rejected the call with `agentSessionId must be a UUID`, logging an ERROR at every startup. The retire path now (a) removes the session from state in an explicit `retireSession` callback that runs regardless of notification outcome, (b) gates the Linear notification by `session.issueContext.trackerId === "linear"` and skips silently for other platforms, and (c) persists state after the drain so removals survive restart.
 
