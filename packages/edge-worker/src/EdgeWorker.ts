@@ -146,6 +146,7 @@ import { IssueStateFilter } from "./auto-resume/filters/IssueStateFilter.js";
 import { RepositoryOptInFilter } from "./auto-resume/filters/RepositoryOptInFilter.js";
 import { RunnerTypeFilter } from "./auto-resume/filters/RunnerTypeFilter.js";
 import { StalenessFilter } from "./auto-resume/filters/StalenessFilter.js";
+import { StatusActiveFilter } from "./auto-resume/filters/StatusActiveFilter.js";
 import { WorktreeExistsFilter } from "./auto-resume/filters/WorktreeExistsFilter.js";
 import type {
 	AutoResumeConfig,
@@ -6469,7 +6470,11 @@ ${input.userComment}
 		let markersCleared = false;
 
 		const orchestrator = new AutoResumeOrchestrator({
-			sessions: () => aggregateManager.getActiveSessions(),
+			// Source ALL persisted sessions (not just status===Active). The
+			// StatusActiveFilter below records non-Active sessions in the run
+			// summary as `status-not-active` skips so the journal surfaces
+			// stuck-status edge cases instead of silently dropping them.
+			sessions: () => aggregateManager.getAllSessions(),
 			repositoryFor: (session) => {
 				const repoId = session.repositories[0]?.repositoryId;
 				return repoId ? this.repositories.get(repoId) : undefined;
@@ -6492,6 +6497,10 @@ ${input.userComment}
 			logger: this.logger,
 			config,
 			filters: [
+				// StatusActiveFilter runs first: cheapest, and surfaces sessions
+				// whose status field looks stuck (e.g., still "complete" after a
+				// re-prompt) instead of silently dropping them at the source.
+				new StatusActiveFilter(),
 				new RunnerTypeFilter(),
 				new RepositoryOptInFilter(),
 				new StalenessFilter(),
