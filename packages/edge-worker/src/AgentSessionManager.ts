@@ -397,6 +397,16 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Non-consuming check used by `shouldAbortSpawn` so the spawn-time
+	 * abort path can decide whether cleanup has already requested a stop
+	 * for this session — without clearing the flag (which the cleanup
+	 * pipeline owns via `removeSession`).
+	 */
+	isStopRequested(linearAgentActivitySessionId: string): boolean {
+		return this.stopRequestedSessions.has(linearAgentActivitySessionId);
+	}
+
+	/**
 	 * Handle child session completion and resume parent
 	 */
 	private async handleChildSessionCompletion(
