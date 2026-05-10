@@ -6794,11 +6794,31 @@ ${input.userComment}
 			for (const { reason } of summary.skipped) {
 				grouped[reason] = (grouped[reason] ?? 0) + 1;
 			}
-			this.logger.info(
-				`Auto-resume skip breakdown: ${Object.entries(grouped)
-					.map(([reason, count]) => `${reason}=${count}`)
-					.join(", ")}`,
-			);
+			// Split high-volume "expected historical" reasons from low-volume
+			// "actionable" reasons so the journal stays useful as cyrus
+			// accumulates completed sessions. A single dominant reason (e.g.
+			// status-not-active=3889 on long-lived installs) would otherwise
+			// drown the meaningful counts. Threshold is heuristic — pick
+			// something low enough that real ops issues (worktree-missing,
+			// hold-label, issue-state-changed) stay loud.
+			const HISTORICAL_THRESHOLD = 100;
+			const sorted = Object.entries(grouped).sort((a, b) => b[1] - a[1]);
+			const actionable = sorted.filter(([, n]) => n < HISTORICAL_THRESHOLD);
+			const historical = sorted.filter(([, n]) => n >= HISTORICAL_THRESHOLD);
+			if (actionable.length > 0) {
+				this.logger.info(
+					`Auto-resume skip breakdown (actionable): ${actionable
+						.map(([reason, count]) => `${reason}=${count}`)
+						.join(", ")}`,
+				);
+			}
+			if (historical.length > 0) {
+				this.logger.info(
+					`Auto-resume skip breakdown (historical, expected): ${historical
+						.map(([reason, count]) => `${reason}=${count}`)
+						.join(", ")}`,
+				);
+			}
 		}
 		// Persist any state changes from the drain (retired sessions removed
 		// from memory by the retireSession callback). Without this an orphan
