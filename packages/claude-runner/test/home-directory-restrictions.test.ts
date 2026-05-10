@@ -256,4 +256,98 @@ describe("with allowedDirectories (attachments dir, repo paths, etc.)", () => {
 
 		check(denied, HOME).denies(".ssh").allows(".cyrus/worktrees/ENG-1/repo");
 	});
+
+	it("carves out the per-repo Claude auto-memory directory so MEMORY.md updates work", () => {
+		// Reproduces the AIN-357 scenario: cyrus session's cwd is the worktree,
+		// repo lives at .cyrus/repos/cove, and Claude Code's auto-memory dir
+		// for that repo lives at .claude/projects/-{HOME}--cyrus-repos-cove/memory.
+		// Without the carve-out, every .claude/** path gets denied because the
+		// session's cwd doesn't traverse it — agents create memory entry files
+		// (Write to a new path is fine) but cannot Read+Edit MEMORY.md to add
+		// the index pointer, leaving entries orphaned.
+		mockHome(HOME, {
+			".ssh": dir({ id_rsa: file() }),
+			".claude.json": file(), // contains API tokens — must stay denied
+			".claude": dir({
+				agents: dir(),
+				projects: dir({
+					"-home-alice--cyrus-repos-cove": dir({
+						memory: dir({
+							"MEMORY.md": file(),
+							"feedback_x.md": file(),
+						}),
+						"abc-1234.jsonl": file(), // session transcript — must stay denied
+					}),
+					"-home-alice--cyrus-repos-other": dir({
+						memory: dir(),
+						"def-5678.jsonl": file(),
+					}),
+				}),
+			}),
+			".cyrus": dir({
+				worktrees: dir({ "ENG-1": dir({ cove: dir() }) }),
+				repos: dir({ cove: dir() }),
+			}),
+		});
+
+		const cwd = `${HOME}/.cyrus/worktrees/ENG-1/cove`;
+		const memoryDir = `${HOME}/.claude/projects/-home-alice--cyrus-repos-cove/memory`;
+
+		const denied = buildHomeDirectoryDisallowedTools(cwd, [memoryDir]);
+
+		check(denied, HOME)
+			.denies(".ssh")
+			.denies(".claude.json") // API tokens — sibling of .claude dir
+			.denies(".claude/agents") // sibling of projects, unrelated
+			.denies(".claude/projects/-home-alice--cyrus-repos-cove/abc-1234.jsonl") // session transcript stays private
+			.denies(".claude/projects/-home-alice--cyrus-repos-other") // other project's memory + transcripts stay private
+			.allows(".claude")
+			.allows(".claude/projects")
+			.allows(".claude/projects/-home-alice--cyrus-repos-cove")
+			.allows(".claude/projects/-home-alice--cyrus-repos-cove/memory")
+			.allows(
+				".claude/projects/-home-alice--cyrus-repos-cove/memory/MEMORY.md",
+			);
+	});
+
+	it("supports carve-outs for multiple repos in a multi-repo session", () => {
+		mockHome(HOME, {
+			".claude": dir({
+				projects: dir({
+					"-home-alice--cyrus-repos-cove": dir({
+						memory: dir({ "MEMORY.md": file() }),
+						"abc.jsonl": file(),
+					}),
+					"-home-alice--cyrus-repos-cove-ovh": dir({
+						memory: dir({ "MEMORY.md": file() }),
+						"def.jsonl": file(),
+					}),
+					"-home-alice--cyrus-repos-other": dir({
+						memory: dir(),
+					}),
+				}),
+			}),
+			".cyrus": dir({
+				worktrees: dir({ "ENG-1": dir({ cove: dir(), "cove-ovh": dir() }) }),
+			}),
+		});
+
+		const cwd = `${HOME}/.cyrus/worktrees/ENG-1/cove`;
+		const coveMemory = `${HOME}/.claude/projects/-home-alice--cyrus-repos-cove/memory`;
+		const ovhMemory = `${HOME}/.claude/projects/-home-alice--cyrus-repos-cove-ovh/memory`;
+
+		const denied = buildHomeDirectoryDisallowedTools(cwd, [
+			coveMemory,
+			ovhMemory,
+		]);
+
+		check(denied, HOME)
+			.denies(".claude/projects/-home-alice--cyrus-repos-cove/abc.jsonl")
+			.denies(".claude/projects/-home-alice--cyrus-repos-cove-ovh/def.jsonl")
+			.denies(".claude/projects/-home-alice--cyrus-repos-other") // a different project's memory stays private
+			.allows(".claude/projects/-home-alice--cyrus-repos-cove/memory/MEMORY.md")
+			.allows(
+				".claude/projects/-home-alice--cyrus-repos-cove-ovh/memory/MEMORY.md",
+			);
+	});
 });
