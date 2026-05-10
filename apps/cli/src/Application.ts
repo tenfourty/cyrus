@@ -30,6 +30,7 @@ export class Application {
 	private isInSetupWaitingMode = false;
 	private isInIdleMode = false;
 	private readonly envFilePath: string;
+	private shutdownPromise?: Promise<void>;
 
 	constructor(
 		public readonly cyrusHome: string,
@@ -316,9 +317,30 @@ export class Application {
 	}
 
 	/**
-	 * Handle graceful shutdown
+	 * Handle graceful shutdown.
+	 *
+	 * Idempotent: subsequent calls return the same Promise as the first. A
+	 * `systemctl restart` on busy hosts can deliver SIGTERM twice (cgroup
+	 * kill + pnpm signal forwarding), and the uncaughtException handler also
+	 * triggers shutdown — without this guard those paths spawned parallel
+	 * `worker.stop()` chains. Both chains called `savePersistedState`, the
+	 * first chain to reach `process.exit(0)` killed the other mid-write,
+	 * and the persistence file ended up empty — silently dropping every
+	 * in-flight session and defeating auto-resume on the next start.
 	 */
-	async shutdown(): Promise<void> {
+	shutdown(): Promise<void> {
+		// NB: not declared `async`. An async wrapper would create a fresh
+		// Promise on every call (wrapping the cached one), which defeats
+		// strict-identity expectations and — more importantly — defeats the
+		// "all callers observe the same outcome" guarantee under microtask
+		// reordering. Returning the cached Promise directly preserves both.
+		if (!this.shutdownPromise) {
+			this.shutdownPromise = this.performShutdown();
+		}
+		return this.shutdownPromise;
+	}
+
+	private async performShutdown(): Promise<void> {
 		// Close .env file watcher
 		if (this.envWatcher) {
 			this.envWatcher.close();
