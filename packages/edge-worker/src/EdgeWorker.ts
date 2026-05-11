@@ -4431,6 +4431,13 @@ ${taskSection}`;
 						: `Stopped session ${agentSessionId} (interrupt not supported)`,
 				);
 			}
+			// Persist the stop intent in session.status. A force-killed runner
+			// may not emit a result message, so `completeSession` (which
+			// otherwise flips status via the `wasStopRequested` branch) is
+			// not guaranteed to run. Without this, persisted state keeps the
+			// session as `Active` and a subsequent Cyrus restart re-resumes
+			// the session, silently overriding the user's stop.
+			await this.agentSessionManager.markSessionStopped(agentSessionId);
 			this.lastStopTimeBySession.delete(agentSessionId);
 			await this.agentSessionManager.createResponseActivity(
 				agentSessionId,
