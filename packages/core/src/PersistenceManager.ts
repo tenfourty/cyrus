@@ -86,6 +86,20 @@ export class PersistenceManager {
 	private persistencePath: string;
 	private logger: ILogger;
 
+	// Coalescing state for concurrent saveEdgeWorkerState calls. When a save
+	// is in flight, additional callers replace the pending snapshot rather
+	// than starting their own write; the chained save then runs once with
+	// the latest snapshot. This makes "latest snapshot wins" deterministic
+	// instead of "whichever write completes last wins" — which previously
+	// allowed a stale pre-flip snapshot to persist when two saves raced.
+	private inFlightSave: Promise<void> | null = null;
+	private pendingSave: {
+		state: SerializableEdgeWorkerState;
+		promise: Promise<void>;
+		resolve: () => void;
+		reject: (err: unknown) => void;
+	} | null = null;
+
 	constructor(persistencePath?: string, logger?: ILogger) {
 		this.persistencePath =
 			persistencePath || join(homedir(), ".cyrus", "state");
@@ -107,9 +121,65 @@ export class PersistenceManager {
 	}
 
 	/**
-	 * Save EdgeWorker state to disk (single file for all repositories)
+	 * Save EdgeWorker state to disk (single file for all repositories).
+	 *
+	 * Concurrent calls are coalesced: if a save is already in flight, the
+	 * incoming snapshot replaces any previously-queued snapshot and shares
+	 * the same outcome promise. The chained save runs exactly once, with
+	 * the most recent state. This prevents a stale snapshot from racing
+	 * a fresher one to disk and "winning" by completing its write last.
 	 */
 	async saveEdgeWorkerState(state: SerializableEdgeWorkerState): Promise<void> {
+		// Case 1: no save in flight — write immediately.
+		if (!this.inFlightSave) {
+			const writePromise = this.writeStateToDisk(state).finally(() => {
+				this.inFlightSave = null;
+				this.drainPendingSave();
+			});
+			this.inFlightSave = writePromise;
+			return writePromise;
+		}
+
+		// Case 2: a save is in flight. Replace any pending snapshot with the
+		// newer state; one chained save will run for whoever set pending last.
+		if (this.pendingSave) {
+			this.pendingSave.state = state;
+			return this.pendingSave.promise;
+		}
+
+		let resolve!: () => void;
+		let reject!: (err: unknown) => void;
+		const promise = new Promise<void>((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+		this.pendingSave = { state, promise, resolve, reject };
+		return promise;
+	}
+
+	/**
+	 * Drain the pending save (if any) after the in-flight save resolves.
+	 * Called from the in-flight save's finally().
+	 */
+	private drainPendingSave(): void {
+		const pending = this.pendingSave;
+		if (!pending) return;
+		this.pendingSave = null;
+		const writePromise = this.writeStateToDisk(pending.state).finally(() => {
+			this.inFlightSave = null;
+			this.drainPendingSave();
+		});
+		this.inFlightSave = writePromise;
+		writePromise.then(pending.resolve, pending.reject);
+	}
+
+	/**
+	 * Actually serialize and write the state file. Internal — callers should
+	 * go through saveEdgeWorkerState so concurrent calls are coalesced.
+	 */
+	private async writeStateToDisk(
+		state: SerializableEdgeWorkerState,
+	): Promise<void> {
 		try {
 			await this.ensurePersistenceDirectory();
 			const stateFile = this.getEdgeWorkerStateFilePath();

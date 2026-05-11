@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Fixed a rare bug where a session's persisted state on disk could briefly lag behind its actual in-memory status if two saves happened back to back in quick succession, which in rare cases could cause a just-completed session to be treated as still active after a restart.
 
 ## [0.2.67] - 2026-07-25
 
