@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- **Stopped sessions no longer silently resume on Cyrus restart** — When a user stopped a session that the runner could not gracefully interrupt (non-warm runner, or a double-stop within the 10s window), Cyrus killed the runner but persisted session status remained `Active` because no SDK result message was emitted to drive `completeSession`'s terminal-status flip. On the next restart, startup recovery code reading `~/.cyrus/state/edge-worker-state.json` saw the session as still active and respawned it — silently overriding the user's stop intent. Cyrus now persists the terminal status at the moment the kill is honored, so a stopped session stays stopped across restarts.
 
 ## [0.2.67] - 2026-07-25
 
