@@ -195,6 +195,7 @@ import { resolveSiblingSkillPlugins } from "./resolveSiblingSkillPlugins.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
+import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
 import { formatTerminalStopMessage } from "./terminal-stop-message.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
@@ -287,6 +288,7 @@ export class EdgeWorker extends EventEmitter {
 		null;
 	private gitHubCommentService: GitHubCommentService; // Service for posting comments back to GitHub PRs
 	private gitLabCommentService: GitLabCommentService; // Service for posting comments back to GitLab MRs
+	private gitlabApiBaseUrl: string | undefined; // Origin derived from repos[].gitlabUrl, shared by comment service + identity resolver
 	private cliRPCServer: CLIRPCServer | null = null; // CLI RPC server for CLI platform mode
 	private configUpdater: ConfigUpdater | null = null; // Single config updater for configuration updates
 	private persistenceManager: PersistenceManager;
@@ -414,22 +416,18 @@ export class EdgeWorker extends EventEmitter {
 		// Initialize GitHub comment service for posting replies to GitHub PRs
 		this.gitHubCommentService = new GitHubCommentService();
 
-		// Initialize GitLab comment service for posting replies to GitLab MRs.
-		// For Self-Managed GitLab the API base URL must be derived from the
-		// configured repos' gitlabUrl host; otherwise the service falls back to
-		// gitlab.com and 404s on every reply. Picks the first configured
-		// GitLab repo's host (single GitLab host per Cyrus instance).
-		const firstGitlabRepo = config.repositories.find((r) => r.gitlabUrl);
-		let gitlabApiBaseUrl: string | undefined;
-		if (firstGitlabRepo?.gitlabUrl) {
-			try {
-				gitlabApiBaseUrl = new URL(firstGitlabRepo.gitlabUrl).origin;
-			} catch {
-				// malformed gitlabUrl — leave undefined and fall through to default
-			}
-		}
+		// Derive the GitLab API base URL once from the configured repos and
+		// share it across every component that talks to GitLab: comment service
+		// (for posting MR replies) and bot-identity resolver (for the startup
+		// /user lookup). If only one of those sees the self-hosted host the
+		// other silently calls gitlab.com — observed live as a 401 from the
+		// identity resolver when the host was correctly derived for the comment
+		// service but not threaded into the resolver.
+		this.gitlabApiBaseUrl = deriveGitlabApiBaseUrl(config.repositories);
 		this.gitLabCommentService = new GitLabCommentService(
-			gitlabApiBaseUrl ? { apiBaseUrl: gitlabApiBaseUrl } : undefined,
+			this.gitlabApiBaseUrl
+				? { apiBaseUrl: this.gitlabApiBaseUrl }
+				: undefined,
 		);
 
 		// Initialize global session registry (centralized session storage)
@@ -1246,15 +1244,20 @@ export class EdgeWorker extends EventEmitter {
 			);
 		} else if (gitLabToken) {
 			try {
+				// Pass the host derived from repos[].gitlabUrl so self-hosted
+				// GitLab deployments resolve against their own /api/v4/user
+				// instead of gitlab.com (where the self-hosted PAT is unknown
+				// and the call returns 401).
 				this.gitLabBotIdentity = await resolveGitLabBotIdentity({
 					token: gitLabToken,
+					apiBaseUrl: this.gitlabApiBaseUrl,
 				});
 				this.logger.info(
-					`Resolved GitLab bot identity: @${this.gitLabBotIdentity.username} (id=${this.gitLabBotIdentity.id})`,
+					`Resolved GitLab bot identity from ${this.gitlabApiBaseUrl ?? "https://gitlab.com"}: @${this.gitLabBotIdentity.username} (id=${this.gitLabBotIdentity.id})`,
 				);
 			} catch (err) {
 				this.logger.error(
-					`Failed to resolve GitLab bot identity from GITLAB_ACCESS_TOKEN: ${err instanceof Error ? err.message : String(err)}. Refusing to register GitLab webhook handler to avoid self-feedback loop. Set GITLAB_BOT_USERNAME to override.`,
+					`Failed to resolve GitLab bot identity from GITLAB_ACCESS_TOKEN at ${this.gitlabApiBaseUrl ?? "https://gitlab.com"}: ${err instanceof Error ? err.message : String(err)}. Refusing to register GitLab webhook handler to avoid self-feedback loop. Set GITLAB_BOT_USERNAME to override.`,
 				);
 				return;
 			}
