@@ -1144,11 +1144,17 @@ export class EdgeWorker extends EventEmitter {
 				const provider = this.gitHubAppTokenProvider;
 				this.gitHubBotIdentity = await resolveGitHubBotIdentityFromApp({
 					fetchAppMetadata: async () => {
-						const token = await provider.getToken();
+						// GET /app requires an App-level JWT (signed with the App
+						// private key), NOT an installation access token. Earlier
+						// versions called provider.getToken() here and GitHub
+						// rejected the installation token with 401 "A JSON web
+						// token could not be decoded" — the self-comment filter
+						// silently fell back to the env override on every restart.
+						const appJwt = await provider.getAppJwt();
 						const response = await fetch("https://api.github.com/app", {
 							method: "GET",
 							headers: {
-								Authorization: `Bearer ${token}`,
+								Authorization: `Bearer ${appJwt}`,
 								Accept: "application/vnd.github+json",
 								"X-GitHub-Api-Version": "2022-11-28",
 							},
