@@ -428,6 +428,36 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Flip a session to a terminal status when a stop was honored without
+	 * the runner emitting a result message (e.g. non-interruptible stop that
+	 * kills the runner mid-flight, or a stop honored at the
+	 * `shouldAbortSpawn` seam).
+	 *
+	 * Without this, persisted `session.status` stays `Active` after the stop
+	 * is honored, because `completeSession` (which flips status on stop via
+	 * the existing `wasStopRequested` branch) is only reached when the runner
+	 * emits a result. A subsequent Cyrus restart then sees an "active"
+	 * session in `~/.cyrus/state/edge-worker-state.json` and auto-resume (or
+	 * any other start-time recovery) respawns it — silently overriding the
+	 * operator's stop intent.
+	 *
+	 * Status maps to `AgentSessionStatus.Error` to match the existing
+	 * `completeSession` convention for stopped sessions; Linear's enum has
+	 * no `Stopped` value.
+	 *
+	 * The stop flag is intentionally NOT consumed here: if the runner does
+	 * emit a late result, `completeSession`'s `wasStopRequested` branch
+	 * still flips status to Error (idempotent), preserving the stop intent.
+	 * Consuming here would let a late "success" result re-flip status to
+	 * Complete and lose the stop record.
+	 */
+	async markSessionStopped(sessionId: string): Promise<void> {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		await this.updateSessionStatus(sessionId, AgentSessionStatus.Error);
+	}
+
+	/**
 	 * Handle child session completion and resume parent
 	 */
 	private async handleChildSessionCompletion(
