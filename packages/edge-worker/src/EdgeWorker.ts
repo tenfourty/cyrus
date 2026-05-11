@@ -489,6 +489,18 @@ export class EdgeWorker extends EventEmitter {
 			},
 		);
 
+		// Persist on terminal status transitions. Without this hook, completion
+		// is in-memory-only and the on-disk state stays stuck at status=active
+		// until shutdown — causing the auto-resume orchestrator to respawn
+		// already-completed sessions on the next restart.
+		this.agentSessionManager.on("session_terminal", ({ sessionId }) => {
+			this.savePersistedState().catch((err) => {
+				this.logger.warn(
+					`Failed to persist state after session ${sessionId} reached terminal status: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		});
+
 		// Initialize repositories with path resolution
 		for (const repo of config.repositories) {
 			if (repo.isActive !== false) {

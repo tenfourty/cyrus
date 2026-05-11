@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Fixed a bug where a session that finished, errored, or went stale could still show as active in the persisted state for a long time (until the next restart), which could cause auto-resume to try to pick the session back up even though it had already finished.
 
 ## [0.2.67] - 2026-07-25
 
