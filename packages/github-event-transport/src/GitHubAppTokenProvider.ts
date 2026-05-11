@@ -27,6 +27,22 @@ export class GitHubAppTokenProvider {
 	}
 
 	/**
+	 * Mint a fresh App-level JWT signed with the App's private key.
+	 *
+	 * Use this for App-scoped GitHub endpoints (e.g. `GET /app` to read the
+	 * App's own metadata). For installation-scoped endpoints (everything
+	 * inside a specific repo) use `getToken()` instead — that returns an
+	 * installation access token, which is what `POST /app/installations/.../access_tokens`
+	 * issues. The two credentials are NOT interchangeable: GitHub rejects
+	 * an installation token at `GET /app` with 401 "A JSON web token could
+	 * not be decoded".
+	 */
+	async getAppJwt(): Promise<string> {
+		const pem = await this.loadPrivateKey();
+		return createAppJwt(this.config.appId, pem);
+	}
+
+	/**
 	 * Get a valid installation access token.
 	 * Returns cached token if still valid, otherwise mints a new one.
 	 */
