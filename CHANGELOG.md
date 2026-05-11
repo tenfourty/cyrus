@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Concurrent saves of the persisted state file no longer race.** When two callers invoked the persistence save back-to-back with different in-memory snapshots, each serialized its own snapshot and then wrote the file independently — whichever write completed last "won," non-deterministically. On long-running edge workers this allowed a stale pre-transition snapshot to persist over a fresher one (e.g., a session that had flipped from active to complete in memory could end up persisted as still-active on disk if its save started slightly after an earlier save that captured the pre-flip state). Concurrent saves are now coalesced: while a save is in flight, additional callers replace the queued snapshot rather than starting their own write, and one chained save runs with the latest state when the in-flight write finishes. Latest-initiated save deterministically wins.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
