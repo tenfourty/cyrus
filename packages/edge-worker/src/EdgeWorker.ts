@@ -175,6 +175,7 @@ import {
 	SkillsPluginResolver,
 } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
+import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
 import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
@@ -220,6 +221,7 @@ export class EdgeWorker extends EventEmitter {
 		null;
 	private gitHubCommentService: GitHubCommentService; // Service for posting comments back to GitHub PRs
 	private gitLabCommentService: GitLabCommentService; // Service for posting comments back to GitLab MRs
+	private gitlabApiBaseUrl: string | undefined; // Origin derived from repos[].gitlabUrl, shared with GitLabCommentService
 	private cliRPCServer: CLIRPCServer | null = null; // CLI RPC server for CLI platform mode
 	private configUpdater: ConfigUpdater | null = null; // Single config updater for configuration updates
 	private persistenceManager: PersistenceManager;
@@ -362,22 +364,16 @@ export class EdgeWorker extends EventEmitter {
 		// Initialize GitHub comment service for posting replies to GitHub PRs
 		this.gitHubCommentService = new GitHubCommentService();
 
-		// Initialize GitLab comment service for posting replies to GitLab MRs.
-		// For Self-Managed GitLab the API base URL must be derived from the
-		// configured repos' gitlabUrl host; otherwise the service falls back to
-		// gitlab.com and 404s on every reply. Picks the first configured
-		// GitLab repo's host (single GitLab host per Cyrus instance).
-		const firstGitlabRepo = config.repositories.find((r) => r.gitlabUrl);
-		let gitlabApiBaseUrl: string | undefined;
-		if (firstGitlabRepo?.gitlabUrl) {
-			try {
-				gitlabApiBaseUrl = new URL(firstGitlabRepo.gitlabUrl).origin;
-			} catch {
-				// malformed gitlabUrl — leave undefined and fall through to default
-			}
-		}
+		// Derive the GitLab API base URL once from the configured repos and
+		// store it on the instance so any future component that talks to
+		// GitLab (e.g. an identity resolver) can share it with the comment
+		// service instead of re-deriving it inline and risking the two
+		// falling out of sync on self-hosted GitLab deployments.
+		this.gitlabApiBaseUrl = deriveGitlabApiBaseUrl(config.repositories);
 		this.gitLabCommentService = new GitLabCommentService(
-			gitlabApiBaseUrl ? { apiBaseUrl: gitlabApiBaseUrl } : undefined,
+			this.gitlabApiBaseUrl
+				? { apiBaseUrl: this.gitlabApiBaseUrl }
+				: undefined,
 		);
 
 		// Initialize global session registry (centralized session storage)
