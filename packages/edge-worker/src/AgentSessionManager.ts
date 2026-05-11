@@ -34,8 +34,17 @@ import type {
 /**
  * Events emitted by AgentSessionManager
  */
-// biome-ignore lint/complexity/noBannedTypes: Empty events type (events removed in CYPACK-996 skill refactor)
-export type AgentSessionManagerEvents = {};
+export type AgentSessionManagerEvents = {
+	/**
+	 * Fired whenever a session's in-memory status transitions to a terminal
+	 * value (Complete, Error, or Stale). EdgeWorker subscribes to this so it
+	 * can call savePersistedState — otherwise completion is in-memory-only
+	 * and the on-disk state stays at status=active until shutdown, which
+	 * causes the auto-resume orchestrator to respawn already-completed
+	 * sessions on next restart.
+	 */
+	session_terminal: (event: { sessionId: string }) => void;
+};
 
 /**
  * Type-safe event emitter interface for AgentSessionManager
@@ -621,6 +630,14 @@ export class AgentSessionManager extends EventEmitter {
 		}
 
 		this.sessions.set(sessionId, session);
+
+		if (
+			status === AgentSessionStatus.Complete ||
+			status === AgentSessionStatus.Error ||
+			status === AgentSessionStatus.Stale
+		) {
+			this.emit("session_terminal", { sessionId });
+		}
 	}
 
 	/**

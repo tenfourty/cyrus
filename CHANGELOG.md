@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Persist session state when sessions reach a terminal status.** Previously, when a session completed (or errored, or went stale), the status transition was applied in memory but the on-disk state file was only refreshed at the next explicit save point — typically shutdown. On a long-running edge worker, this meant a completed Linear session could carry stale `status: active` on disk for hours after actually finishing, and any restart in that window would surface the completed session to the auto-resume orchestrator as if it were still in-flight.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
