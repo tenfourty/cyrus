@@ -48,7 +48,16 @@ export type AgentSessionManagerEvents = {
 		isError: boolean;
 	}) => void;
 
-	/** Fired when a result SDKMessage is processed (session is terminal). */
+	/**
+	 * Fired whenever a session's in-memory status transitions to a terminal
+	 * value (Complete, Error, or Stale). Originally emitted from the
+	 * `result` SDKMessage path for drain tracking; now also emitted from
+	 * `updateSessionStatus` so EdgeWorker can call savePersistedState on
+	 * every terminal transition — without this hook, completion is
+	 * in-memory-only and the on-disk state stays stuck at status=active
+	 * until shutdown, causing the auto-resume orchestrator to respawn
+	 * already-completed sessions on the next restart.
+	 */
 	session_terminal: (event: { sessionId: string }) => void;
 };
 
@@ -733,6 +742,14 @@ export class AgentSessionManager extends EventEmitter {
 		}
 
 		this.sessions.set(sessionId, session);
+
+		if (
+			status === AgentSessionStatus.Complete ||
+			status === AgentSessionStatus.Error ||
+			status === AgentSessionStatus.Stale
+		) {
+			this.emit("session_terminal", { sessionId });
+		}
 	}
 
 	/**
