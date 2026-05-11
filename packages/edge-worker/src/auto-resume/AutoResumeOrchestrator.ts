@@ -23,8 +23,20 @@ export interface AutoResumeOrchestratorDeps {
 	resumeSession: (session: CyrusAgentSession) => Promise<void>;
 	/** Posts a "resumed after restart" activity. Best-effort. */
 	notifyResumed: (session: CyrusAgentSession) => Promise<void>;
-	/** Posts a "session retired" activity. Best-effort. */
+	/** Posts a "session retired" activity. Best-effort UX hook. */
 	notifyRetired: (
+		session: CyrusAgentSession,
+		reason: SkipReason,
+	) => Promise<void>;
+	/**
+	 * Remove the session from in-memory + persisted state. Called for skip
+	 * reasons that should permanently discard the session (currently only
+	 * `worktree-missing`). Separate from `notifyRetired` so notification
+	 * failures (e.g. cross-platform validation errors) do NOT leave the
+	 * session record stuck in state — the orphan would otherwise resurface
+	 * at every restart and re-fire the same notification error.
+	 */
+	retireSession: (
 		session: CyrusAgentSession,
 		reason: SkipReason,
 	) => Promise<void>;
@@ -84,6 +96,7 @@ export class AutoResumeOrchestrator {
 			summary.skipped.push({ sessionId: session.id, reason: result });
 			if (NOTIFY_RETIRED_REASONS.has(result)) {
 				await this.safeNotifyRetired(session, result);
+				await this.safeRetireSession(session, result);
 			}
 		}
 
@@ -186,6 +199,21 @@ export class AutoResumeOrchestrator {
 		} catch (error) {
 			this.deps.logger.warn(
 				`Auto-resume notifyRetired failed for ${session.id}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
+
+	private async safeRetireSession(
+		session: CyrusAgentSession,
+		reason: SkipReason,
+	): Promise<void> {
+		try {
+			await this.deps.retireSession(session, reason);
+		} catch (error) {
+			this.deps.logger.warn(
+				`Auto-resume retireSession failed for ${session.id}: ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 			);
