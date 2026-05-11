@@ -189,6 +189,7 @@ import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
+import { formatTerminalStopMessage } from "./terminal-stop-message.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
 import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
@@ -3373,12 +3374,34 @@ ${taskSection}`;
 			}
 		}
 
+		// Linear's issueStatusChanged notification doesn't include the new state
+		// type — fetch the issue and read state.type so we can post a clear
+		// "Done" vs "Canceled" message. Deletions / fetch failures fall back to
+		// a neutral "was closed." wording.
+		let stateType: string | null | undefined;
+		try {
+			const issueTracker = this.getIssueTrackerForWorkspace(
+				message.organizationId,
+			);
+			const issue = await issueTracker?.fetchIssue(issueId);
+			const state = await issue?.state;
+			stateType = state?.type;
+		} catch (err) {
+			this.logger.debug(
+				`Could not resolve terminal state type for ${message.workItemIdentifier}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		const stopMessage = formatTerminalStopMessage(
+			message.workItemIdentifier,
+			stateType,
+		);
+
 		// Post a response activity to each stopped session's Linear thread,
 		// then remove the session so subsequent prompts don't find stale state.
 		for (const session of sessions) {
 			await this.agentSessionManager.createResponseActivity(
 				session.id,
-				`Session stopped — ${message.workItemIdentifier} was marked as Done or Canceled.`,
+				stopMessage,
 			);
 			this.agentSessionManager.removeSession(session.id);
 			// Multi-repo sessions write a sibling-plugins temp dir per-session
