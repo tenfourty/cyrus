@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+- When an issue reaches a terminal state and Cyrus stops the session, the wrap-up activity now states which terminal state was actually reached — "was marked Done." or "was Canceled." — instead of the ambiguous "was marked as Done or Canceled." If the state can't be determined (e.g., the issue was deleted), the message falls back to a neutral "was closed."
 
 ## [0.2.67] - 2026-07-25
 
