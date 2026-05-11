@@ -4508,6 +4508,14 @@ ${taskSection}`;
 				log.info(
 					`Skipping runner spawn (${abortReason}) — issue terminal cleanup ran during config build`,
 				);
+				if (abortReason === "stop-requested") {
+					// A stop honored here never reaches the runner, so
+					// `completeSession` won't flip status. Without this,
+					// persisted state keeps the session Active and any
+					// startup recovery (e.g. auto-resume) re-spawns it
+					// after a restart.
+					await agentSessionManager.markSessionStopped(session.id);
+				}
 				await this.savePersistedState();
 				return;
 			}
@@ -7188,6 +7196,12 @@ ${input.userComment}
 			log.info(
 				`Skipping runner spawn on resume (${abortReason}) — issue terminal cleanup ran during config build`,
 			);
+			if (abortReason === "stop-requested") {
+				// Same rationale as the new-session abort path above:
+				// persist the terminal status so the next restart's
+				// recovery code doesn't re-resume a stopped session.
+				await agentSessionManager.markSessionStopped(session.id);
+			}
 			await this.savePersistedState();
 			return;
 		}
