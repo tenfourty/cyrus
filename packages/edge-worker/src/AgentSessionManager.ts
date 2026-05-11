@@ -634,6 +634,25 @@ export class AgentSessionManager extends EventEmitter {
 						);
 					}
 					this.clearPendingToolUseTracking(sessionId);
+					// First of two `session_terminal` emits per successful
+					// completion. This one fires BEFORE completeSession flips
+					// status to terminal, so its snapshot is still Active.
+					// The second emit fires from updateSessionStatus (line ~751)
+					// after the flip with the Complete/Error/Stale snapshot.
+					//
+					// Safe because:
+					//   - PersistenceManager.saveEdgeWorkerState coalesces
+					//     concurrent saves; whichever snapshot is pending when
+					//     the in-flight write finishes deterministically wins.
+					//     The second (post-flip) snapshot always replaces the
+					//     pending one before any chained save runs.
+					//   - DrainController also subscribes but operates on
+					//     minute-scale caps, so the ~ms difference between
+					//     the two emits is meaningless to it.
+					//
+					// If either of those invariants ever changes (e.g. coalescing
+					// is removed, or drain becomes ms-sensitive), drop this emit
+					// — the post-flip one alone is semantically correct.
 					this.emit("session_terminal", { sessionId });
 					await this.completeSession(sessionId, message as SDKResultMessage);
 					break;
