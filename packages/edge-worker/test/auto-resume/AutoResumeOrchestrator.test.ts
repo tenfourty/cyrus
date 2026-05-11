@@ -487,4 +487,75 @@ describe("AutoResumeOrchestrator", () => {
 
 		expect(sleep).not.toHaveBeenCalled();
 	});
+
+	it("calls retireSession when worktree is missing — even if notifyRetired throws", async () => {
+		// Background: prior to this, the orchestrator only fired the
+		// best-effort UX notification (`notifyRetired`) for worktree-missing
+		// skips and did NOT remove the session from state. When the
+		// notification call threw — e.g. Linear's GraphQL rejected a
+		// non-UUID GitLab session id with `agentSessionId must be a UUID` —
+		// the orphan stayed in state, surfaced again at every restart,
+		// and re-fired the same error indefinitely.
+		const session = makeSession({
+			workspace: { path: "/tmp/does-not-exist-anywhere", isGitWorktree: true },
+		});
+		const retireSession = vi.fn().mockResolvedValue(undefined);
+		const notifyRetired = vi
+			.fn()
+			.mockRejectedValue(new Error("agentSessionId must be a UUID"));
+
+		const orchestrator = new AutoResumeOrchestrator({
+			sessions: () => [session],
+			repositoryFor: () => ({ autoResumeOnStartup: true }) as any,
+			fetchIssueState: async () => ({ stateType: "started", labels: [] }),
+			resumeSession: async () => {},
+			notifyResumed: async () => {},
+			notifyRetired,
+			retireSession,
+			logger: console as any,
+			config: defaultConfig,
+			filters: makeFilters(),
+			sleep: async () => {},
+			random: () => 0,
+		});
+
+		const summary = await orchestrator.run();
+
+		expect(notifyRetired).toHaveBeenCalledOnce();
+		expect(retireSession).toHaveBeenCalledOnce();
+		expect(retireSession).toHaveBeenCalledWith(session, "worktree-missing");
+		expect(summary.skipped).toEqual([
+			{ sessionId: "session-1", reason: "worktree-missing" },
+		]);
+	});
+
+	it("calls retireSession when retireSession itself throws — failure is logged but does not abort the drain", async () => {
+		const session = makeSession({
+			workspace: { path: "/tmp/does-not-exist-anywhere", isGitWorktree: true },
+		});
+		const retireSession = vi
+			.fn()
+			.mockRejectedValue(new Error("removeSession blew up"));
+
+		const orchestrator = new AutoResumeOrchestrator({
+			sessions: () => [session],
+			repositoryFor: () => ({ autoResumeOnStartup: true }) as any,
+			fetchIssueState: async () => ({ stateType: "started", labels: [] }),
+			resumeSession: async () => {},
+			notifyResumed: async () => {},
+			notifyRetired: async () => {},
+			retireSession,
+			logger: { ...console, warn: vi.fn() } as any,
+			config: defaultConfig,
+			filters: makeFilters(),
+			sleep: async () => {},
+			random: () => 0,
+		});
+
+		const summary = await orchestrator.run();
+		expect(retireSession).toHaveBeenCalledOnce();
+		expect(summary.skipped).toEqual([
+			{ sessionId: "session-1", reason: "worktree-missing" },
+		]);
+	});
 });

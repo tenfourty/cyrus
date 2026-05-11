@@ -6271,6 +6271,15 @@ ${input.userComment}
 			notifyRetired: async (session, reason) => {
 				await this.notifyAutoResumeRetired(session, reason);
 			},
+			retireSession: async (session) => {
+				// State hygiene: drop the session from in-memory state.
+				// Persistence catches up via the orchestrator's next save
+				// or the coalescing PersistenceManager. Without this, an
+				// orphan (e.g. a session whose worktree was swept by manual
+				// cleanup) resurfaces at every restart and re-fires the
+				// same notifyRetired error indefinitely.
+				this.agentSessionManager.removeSession(session.id);
+			},
 			logger: this.logger,
 			config,
 			filters: [
@@ -6299,6 +6308,11 @@ ${input.userComment}
 					.join(", ")}`,
 			);
 		}
+		// Persist any state changes from the drain (retired sessions removed
+		// from memory by the retireSession callback). Without this an orphan
+		// only gets cleared from memory and resurfaces from disk at the next
+		// restart, re-firing the same retire path indefinitely.
+		await this.savePersistedState();
 	}
 
 	private resolveAutoResumeConfig(): AutoResumeConfig {
@@ -6403,6 +6417,14 @@ ${input.userComment}
 		reason: SkipReason,
 	): Promise<void> {
 		if (reason !== "worktree-missing") return;
+		// Only Linear-tracked sessions get a thought activity. GitLab and
+		// GitHub sessions use synthetic non-UUID ids (`gitlab-<millis>`,
+		// `github-<num>`, etc.), which Linear's GraphQL rejects with
+		// `agentSessionId must be a UUID`. The right destination for those
+		// platforms would be the MR/PR thread, but a stale "session retired"
+		// note there has dubious UX value — users discover the dead session
+		// by re-mentioning. Skip silently.
+		if (session.issueContext?.trackerId !== "linear") return;
 		const repoId = session.repositories[0]?.repositoryId;
 		const repo = repoId ? this.repositories.get(repoId) : undefined;
 		if (!repo) return;
