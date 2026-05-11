@@ -5042,6 +5042,19 @@ ${taskSection}`;
 
 		const agentSessionManager = this.agentSessionManager;
 
+		// Clear any stale stop request from a prior user-initiated stop on this
+		// session. The flag is meant to abort an in-flight spawn that races
+		// with issue-terminal cleanup; outside that race the flag has no
+		// cleaner, so without this clear a stopped session would silently
+		// drop every subsequent user prompt at shouldAbortSpawn. By the time
+		// this handler runs the user has explicitly re-engaged, so the prior
+		// stop has served its purpose.
+		if (agentSessionManager.consumeStopRequest(sessionId)) {
+			this.logger.info(
+				`Cleared stale stop request for session ${sessionId} on new user prompt`,
+			);
+		}
+
 		let session = agentSessionManager.getSession(sessionId);
 		let isNewSession = false;
 		let fullIssue: Issue | null = null;

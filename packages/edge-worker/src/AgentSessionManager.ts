@@ -413,7 +413,24 @@ export class AgentSessionManager extends EventEmitter {
 		log.info(`Session completed (subtype: ${resultMessage.subtype})`);
 	}
 
-	private consumeStopRequest(linearAgentActivitySessionId: string): boolean {
+	/**
+	 * Consume (clear and return) the stop-requested flag for a session.
+	 *
+	 * Two callers:
+	 *
+	 * - `completeSession` — runs when the runner emits a result message.
+	 *   If a stop was requested, the session is marked Error rather than
+	 *   Complete.
+	 * - `handleNormalPromptedActivity` (EdgeWorker) — runs when a new
+	 *   user prompt arrives. Clears stale flags from prior user-initiated
+	 *   stops so the next spawn isn't aborted at `shouldAbortSpawn` for
+	 *   a stop the user has already moved on from.
+	 *
+	 * NOT used by `shouldAbortSpawn` itself — it uses the non-consuming
+	 * `isStopRequested` so issue-terminal cleanup's race-prevention path
+	 * stays in control of the flag's lifecycle.
+	 */
+	consumeStopRequest(linearAgentActivitySessionId: string): boolean {
 		if (!this.stopRequestedSessions.has(linearAgentActivitySessionId)) {
 			return false;
 		}
