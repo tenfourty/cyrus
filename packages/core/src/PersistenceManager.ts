@@ -94,6 +94,20 @@ export class PersistenceManager {
 	private logger: ILogger;
 	private tmpFileCounter = 0;
 
+	// Coalescing state for concurrent saveEdgeWorkerState calls. When a save
+	// is in flight, additional callers replace the pending snapshot rather
+	// than starting their own write; the chained save then runs once with
+	// the latest snapshot. This makes "latest snapshot wins" deterministic
+	// instead of "whichever write completes last wins" — which previously
+	// allowed a stale pre-flip snapshot to persist when two saves raced.
+	private inFlightSave: Promise<void> | null = null;
+	private pendingSave: {
+		state: SerializableEdgeWorkerState;
+		promise: Promise<void>;
+		resolve: () => void;
+		reject: (err: unknown) => void;
+	} | null = null;
+
 	constructor(persistencePath?: string, logger?: ILogger) {
 		this.persistencePath =
 			persistencePath || join(homedir(), ".cyrus", "state");
@@ -115,7 +129,64 @@ export class PersistenceManager {
 	}
 
 	/**
-	 * Save EdgeWorker state to disk via a tmp file plus atomic rename.
+	 * Save EdgeWorker state to disk (single file for all repositories).
+	 *
+	 * Concurrent calls are coalesced: if a save is already in flight, the
+	 * incoming snapshot replaces any previously-queued snapshot and shares
+	 * the same outcome promise. The chained save runs exactly once, with
+	 * the most recent state. This prevents a stale snapshot from racing
+	 * a fresher one to disk and "winning" by completing its write last —
+	 * the failure mode that previously let a pre-flip Active snapshot
+	 * persist over a Complete one when two saves raced.
+	 */
+	async saveEdgeWorkerState(state: SerializableEdgeWorkerState): Promise<void> {
+		// Case 1: no save in flight — write immediately.
+		if (!this.inFlightSave) {
+			const writePromise = this.writeStateToDisk(state).finally(() => {
+				this.inFlightSave = null;
+				this.drainPendingSave();
+			});
+			this.inFlightSave = writePromise;
+			return writePromise;
+		}
+
+		// Case 2: a save is in flight. Replace any pending snapshot with the
+		// newer state; one chained save will run for whoever set pending last.
+		if (this.pendingSave) {
+			this.pendingSave.state = state;
+			return this.pendingSave.promise;
+		}
+
+		let resolve!: () => void;
+		let reject!: (err: unknown) => void;
+		const promise = new Promise<void>((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+		this.pendingSave = { state, promise, resolve, reject };
+		return promise;
+	}
+
+	/**
+	 * Drain the pending save (if any) after the in-flight save resolves.
+	 * Called from the in-flight save's finally().
+	 */
+	private drainPendingSave(): void {
+		const pending = this.pendingSave;
+		if (!pending) return;
+		this.pendingSave = null;
+		const writePromise = this.writeStateToDisk(pending.state).finally(() => {
+			this.inFlightSave = null;
+			this.drainPendingSave();
+		});
+		this.inFlightSave = writePromise;
+		writePromise.then(pending.resolve, pending.reject);
+	}
+
+	/**
+	 * Actually serialize and write the state file via a tmp file plus atomic
+	 * rename. Internal — callers should go through saveEdgeWorkerState so
+	 * concurrent calls are coalesced.
 	 *
 	 * Why not a plain `writeFile`: that opens the target path with `O_TRUNC`
 	 * and writes synchronously. A process killed (SIGKILL, `process.exit`)
@@ -131,16 +202,14 @@ export class PersistenceManager {
 	 * the old file or the fully-written new one, never a partial. The tmp
 	 * file lives in the same directory as the target so the rename never
 	 * crosses filesystems and falls back to non-atomic copy+unlink. The
-	 * `.tmp.<pid>` suffix scopes the tmp file to this process so multiple
-	 * cyrus instances (defense-in-depth — they shouldn't coexist) target
-	 * distinct tmp paths.
+	 * `.tmp.<pid>.<counter>` suffix scopes the tmp file to this process so
+	 * multiple cyrus instances (defense-in-depth — they shouldn't coexist)
+	 * target distinct tmp paths.
 	 */
-	async saveEdgeWorkerState(state: SerializableEdgeWorkerState): Promise<void> {
+	private async writeStateToDisk(
+		state: SerializableEdgeWorkerState,
+	): Promise<void> {
 		const stateFile = this.getEdgeWorkerStateFilePath();
-		// Per-call suffix avoids the ENOENT that two concurrent saves would
-		// otherwise hit at the rename step: writer A renames its tmp away,
-		// writer B then tries to rename a path that no longer exists. Each
-		// call writes its own tmp; whichever rename runs last wins.
 		this.tmpFileCounter += 1;
 		const tmpFile = `${stateFile}.tmp.${process.pid}.${this.tmpFileCounter}`;
 		try {
