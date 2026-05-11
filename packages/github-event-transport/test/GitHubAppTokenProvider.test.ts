@@ -66,6 +66,32 @@ describe("createAppJwt", () => {
 	});
 });
 
+describe("GitHubAppTokenProvider.getAppJwt", () => {
+	it("returns a JWT signed with the App's private key (not an installation token)", async () => {
+		// GET /app on the GitHub API requires a JWT signed with the App's
+		// private key, NOT an installation access token. The bot-identity
+		// resolver previously called getToken() (installation token) for
+		// this endpoint and GitHub rejected it with 401 "A JSON web token
+		// could not be decoded". getAppJwt is the right credential.
+		const provider = new GitHubAppTokenProvider({
+			appId: "777",
+			installationId: "irrelevant",
+			privateKeyPath: pemPath,
+		});
+
+		const jwt = await provider.getAppJwt();
+		const [headerB64, payloadB64] = jwt.split(".");
+		const header = JSON.parse(
+			Buffer.from(headerB64, "base64url").toString(),
+		);
+		const payload = JSON.parse(
+			Buffer.from(payloadB64, "base64url").toString(),
+		);
+		expect(header.alg).toBe("RS256");
+		expect(payload.iss).toBe("777");
+	});
+});
+
 describe("GitHubAppTokenProvider", () => {
 	it("mints a token by calling the GitHub API", async () => {
 		const mockToken = "ghs_mock_installation_token_abc123";
