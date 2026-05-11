@@ -197,6 +197,7 @@ import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
 import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
+import { notifySpawnAbort } from "./spawn-abort-message.js";
 import { formatTerminalStopMessage } from "./terminal-stop-message.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
@@ -4761,6 +4762,12 @@ ${taskSection}`;
 					// after a restart.
 					await agentSessionManager.markSessionStopped(session.id);
 				}
+				await notifySpawnAbort({
+					sessionId: session.id,
+					reason: abortReason,
+					activityPoster: agentSessionManager,
+					logger: this.logger,
+				});
 				await this.savePersistedState();
 				return;
 			}
@@ -6970,6 +6977,7 @@ ${input.userComment}
 		);
 	}
 
+
 	/**
 	 * Whether the remote Claude session store is explicitly disabled.
 	 *
@@ -7558,6 +7566,12 @@ ${input.userComment}
 				// recovery code doesn't re-resume a stopped session.
 				await agentSessionManager.markSessionStopped(session.id);
 			}
+			await notifySpawnAbort({
+				sessionId: session.id,
+				reason: abortReason,
+				activityPoster: agentSessionManager,
+				logger: this.logger,
+			});
 			await this.savePersistedState();
 			return;
 		}
