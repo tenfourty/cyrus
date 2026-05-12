@@ -195,7 +195,9 @@ import { resolveSiblingSkillPlugins } from "./resolveSiblingSkillPlugins.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import { SkillsPluginResolver } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
+import { compactClaudeSession } from "./compact-claude-session.js";
 import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
+import { shouldCompactBeforeTurn } from "./pre-turn-compact.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
 import { notifySpawnAbort } from "./spawn-abort-message.js";
 import { formatTerminalStopMessage } from "./terminal-stop-message.js";
@@ -7527,6 +7529,53 @@ ${input.userComment}
 		console.log(
 			`[resumeAgentSession] needsNewSession=${needsNewSession}, resumeSessionId=${resumeSessionId ?? "none"}`,
 		);
+
+		// Pre-turn compact guard: when this is a Claude session resume and the
+		// session's recorded usage already crosses the configured threshold,
+		// run `/compact` against the existing claudeSessionId BEFORE forwarding
+		// the user's prompt to a fresh runner. The SDK's built-in
+		// auto-compaction only fires mid-stream during a turn, so a session
+		// that ended above the threshold (stopped, or grew past it on the
+		// final response) will otherwise rehydrate the over-budget transcript
+		// at the start of the next turn and fail with "Prompt is too long".
+		//
+		// Disabled when no Cyrus threshold is configured — operators who
+		// haven't opted in get the SDK's default behavior unchanged.
+		const resolvedAutoCompactThreshold =
+			repository.autoCompactThresholdPercent ??
+			this.config.autoCompactThresholdPercent;
+		if (resumeSessionId && session.claudeSessionId) {
+			const decision = shouldCompactBeforeTurn({
+				session,
+				thresholdPercent: resolvedAutoCompactThreshold,
+				logger: log,
+			});
+			if (decision.compact) {
+				log.info(
+					`Pre-turn compact: session at ${
+						decision.currentPercent?.toFixed(1) ?? "?"
+					}% of context window (threshold ${resolvedAutoCompactThreshold}%), running /compact before forwarding prompt`,
+				);
+				const compactResult = await compactClaudeSession({
+					claudeSessionId: session.claudeSessionId,
+					workingDirectory: session.workspace.path,
+					additionalEnv:
+						resolvedAutoCompactThreshold !== undefined
+							? {
+									CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
+										resolvedAutoCompactThreshold,
+									),
+								}
+							: undefined,
+					logger: log,
+				});
+				if (!compactResult.ok) {
+					log.warn(
+						`Pre-turn /compact failed (${compactResult.error}). Proceeding with resume — the user's prompt may also hit the same wall.`,
+					);
+				}
+			}
+		}
 
 		// Create runner configuration
 		// buildAgentRunnerConfig determines runner type from labels for new sessions
