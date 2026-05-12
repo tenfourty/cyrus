@@ -42,6 +42,11 @@ describe("buildEdgeWorkerConfig", () => {
 				autoCompactThresholdPercent: 50,
 				autoResume: { enabled: true } as any,
 				cursorDefaultModel: "composer-2",
+				telemetry: {
+					enabled: true,
+					ndjsonDir: "/tmp/t",
+					otlp: { endpoint: "http://x:4317" },
+				},
 			},
 			env: {},
 			repositories,
@@ -51,6 +56,11 @@ describe("buildEdgeWorkerConfig", () => {
 		expect(result.autoCompactThresholdPercent).toBe(50);
 		expect(result.autoResume).toEqual({ enabled: true });
 		expect(result.cursorDefaultModel).toBe("composer-2");
+		expect(result.telemetry).toEqual({
+			enabled: true,
+			ndjsonDir: "/tmp/t",
+			otlp: { endpoint: "http://x:4317" },
+		});
 	});
 
 	it("overrides edgeConfig.repositories with explicit repositories param (runtime selection wins)", () => {
