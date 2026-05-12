@@ -121,6 +121,18 @@ describe("formatTelemetryRollup", () => {
 			"· 42.0s ·",
 		);
 	});
+
+	it("uses M suffix for totals at or above 1M tokens (1M-window Claude sessions)", () => {
+		const big: SessionTelemetryTotals = {
+			...totals,
+			totalInputTokens: 22,
+			totalCacheReadTokens: 2_276_000,
+			totalCacheCreationTokens: 164_400,
+		};
+		const out = formatTelemetryRollup(big);
+		expect(out).toContain("22 in /");
+		expect(out).toContain("2.4M cache");
+	});
 });
 
 describe("accumulateTotals", () => {

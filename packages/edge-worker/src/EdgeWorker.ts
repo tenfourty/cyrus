@@ -51,6 +51,7 @@ import type {
 	WebhookIssue,
 } from "cyrus-core";
 import {
+	AgentSessionStatus,
 	CLIIssueTrackerService,
 	CLIRPCServer,
 	createLogger,
@@ -1457,13 +1458,29 @@ export class EdgeWorker extends EventEmitter {
 	}
 
 	/**
-	 * Post the session-totals rollup thought when telemetry is ready.
-	 * Idempotent via session.metadata.rollupPosted so duplicate emissions
-	 * (e.g., if completeSession fires twice on a race) post only once.
+	 * Post the session-totals rollup thought when telemetry is ready AND
+	 * the session has reached a terminal status. The `session_telemetry_ready`
+	 * event fires after every successful `addResultEntry` (i.e., every turn),
+	 * but rollup should only post on the FINAL turn — otherwise a multi-turn
+	 * session would post a "1 turns" rollup after turn 1 and never update.
+	 *
+	 * On tenfourty-deploy, `completeSession` runs `updateSessionStatus` →
+	 * `addResultEntry`, so by the time this listener fires for the final
+	 * turn the status is already Complete/Error/Stale. Non-terminal turns
+	 * are filtered out here.
+	 *
+	 * `rollupPosted` flag still guards against duplicate emissions on
+	 * truly terminal sessions (e.g., if `completeSession` fires twice
+	 * on a race condition).
 	 */
 	private async handleSessionTelemetryReady(sessionId: string): Promise<void> {
 		const session = this.agentSessionManager.getSession(sessionId);
 		if (!session) return;
+		const isTerminal =
+			session.status === AgentSessionStatus.Complete ||
+			session.status === AgentSessionStatus.Error ||
+			session.status === AgentSessionStatus.Stale;
+		if (!isTerminal) return;
 		const repoId = session.repositories[0]?.repositoryId;
 		if (!repoId) return;
 		const cfg = this.resolveTelemetryConfig(repoId);
