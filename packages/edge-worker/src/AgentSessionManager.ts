@@ -11,19 +11,25 @@ import type {
 	SDKUserMessage,
 } from "cyrus-claude-runner";
 import {
+	accumulateTotals,
 	AgentSessionStatus,
 	AgentSessionType,
 	type CyrusAgentSession,
 	type CyrusAgentSessionEntry,
 	createLogger,
+	emptyTotals,
+	formatTelemetryFooter,
 	type IAgentRunner,
 	type ILogger,
 	type IssueMinimal,
 	type RepositoryContext,
+	type RunnerTelemetryRecord,
 	type SerializedCyrusAgentSession,
 	type SerializedCyrusAgentSessionEntry,
 	type Workspace,
 } from "cyrus-core";
+import { extractTelemetry } from "./telemetry-extractors.js";
+import { TelemetryWriter } from "./TelemetryWriter.js";
 
 import type {
 	ActivityPostOptions,
@@ -32,10 +38,31 @@ import type {
 } from "./sinks/index.js";
 
 /**
+ * Resolved per-repo telemetry config — produced by EdgeWorker's resolver,
+ * consumed inside `addResultEntry`. Keeps the resolver out of the manager
+ * so per-repo overrides can change without touching this class.
+ */
+export interface ResolvedTelemetryConfig {
+	enabled: boolean;
+	linearFooter: boolean;
+	ndjsonDir?: string;
+}
+
+export type TelemetryResolver = (repoId: string) => ResolvedTelemetryConfig;
+
+/**
  * Events emitted by AgentSessionManager
  */
-// biome-ignore lint/complexity/noBannedTypes: Empty events type (events removed in CYPACK-996 skill refactor)
-export type AgentSessionManagerEvents = {};
+export type AgentSessionManagerEvents = {
+	/**
+	 * Emitted at the end of `addResultEntry` once per-turn telemetry has
+	 * been written to the session entry + running totals updated. The
+	 * EdgeWorker listens to this (NOT a generic terminal event) to post
+	 * the session rollup, because telemetry totals are not available
+	 * until after the result entry's metadata is filled in.
+	 */
+	session_telemetry_ready: (event: { sessionId: string }) => void;
+};
 
 /**
  * Type-safe event emitter interface for AgentSessionManager
@@ -87,6 +114,8 @@ export class AgentSessionManager extends EventEmitter {
 		prompt: string,
 		childSessionId: string,
 	) => Promise<void>;
+	private readonly telemetryResolver?: TelemetryResolver;
+	private readonly telemetryWriters = new Map<string, TelemetryWriter>();
 
 	constructor(
 		getParentSessionId?: (childSessionId: string) => string | undefined,
@@ -96,11 +125,58 @@ export class AgentSessionManager extends EventEmitter {
 			childSessionId: string,
 		) => Promise<void>,
 		logger?: ILogger,
+		telemetryResolver?: TelemetryResolver,
 	) {
 		super();
+		this.telemetryResolver = telemetryResolver;
 		this.logger = logger ?? createLogger({ component: "AgentSessionManager" });
 		this.getParentSessionId = getParentSessionId;
 		this.resumeParentSession = resumeParentSession;
+	}
+
+	/**
+	 * Lazily create + cache a TelemetryWriter per ndjson directory. Cache
+	 * survives the manager's lifetime; cleanup is the OS's job (operators
+	 * roll their own `find ~/.cyrus/telemetry -mtime +90 -delete`).
+	 */
+	private getTelemetryWriter(dir: string): TelemetryWriter {
+		let w = this.telemetryWriters.get(dir);
+		if (!w) {
+			w = new TelemetryWriter(dir, {
+				onError: (m) => this.logger.warn(m),
+			});
+			this.telemetryWriters.set(dir, w);
+		}
+		return w;
+	}
+
+	/**
+	 * Count tool invocations for the just-finished turn by walking entries
+	 * backward from the end and stopping at the prior `result` entry (turn
+	 * boundary). Counts by `metadata.toolName` rather than entry type
+	 * because tool_use blocks are stored on `type: "assistant"` entries.
+	 * Truthful across all runners because the count derives from what we
+	 * actually persisted, not from runner-reported numbers (which Codex
+	 * hardcodes to 1 and Gemini misuses to mean total tool calls).
+	 */
+	private countToolCallsForCurrentTurn(sessionId: string): {
+		total: number;
+		byName: Record<string, number>;
+	} {
+		const entries = this.entries.get(sessionId) ?? [];
+		const byName: Record<string, number> = {};
+		let total = 0;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (!e) continue;
+			if (e.type === "result") break;
+			const name = e.metadata?.toolName;
+			if (name) {
+				total++;
+				byName[name] = (byName[name] ?? 0) + 1;
+			}
+		}
+		return { total, byName };
 	}
 
 	/**
@@ -360,11 +436,15 @@ export class AgentSessionManager extends EventEmitter {
 				? AgentSessionStatus.Complete
 				: AgentSessionStatus.Error;
 
-		// Update session status and metadata
-		await this.updateSessionStatus(sessionId, status, {
-			totalCostUsd: resultMessage.total_cost_usd,
-			usage: resultMessage.usage,
-		});
+		// Update session status. Cost/usage are no longer captured here — the
+		// telemetry path inside addResultEntry now writes full per-turn
+		// economics + accumulates running totals on session.metadata.
+		// telemetryTotals when telemetry is enabled. When telemetry is
+		// disabled the previous last-turn-wins capture would have only
+		// recorded the final turn's numbers anyway (overwriting prior
+		// turns); the new behavior gives operators correct per-turn data
+		// when they enable it and nothing extra when they don't.
+		await this.updateSessionStatus(sessionId, status);
 
 		if (wasStopRequested) {
 			log.info(`Session was stopped by user`);
@@ -664,6 +744,42 @@ export class AgentSessionManager extends EventEmitter {
 						: ""))
 		).trim();
 
+		// Resolve telemetry config (per-repo override merged over global) and
+		// build the per-turn record if enabled. Footer + NDJSON + running
+		// totals are all gated on telemetryConfig.enabled.
+		const repoId = session?.repositories[0]?.repositoryId ?? "unknown";
+		const telemetryConfig = this.telemetryResolver?.(repoId);
+		let runnerTelemetry: RunnerTelemetryRecord | undefined;
+		let footer = "";
+		if (telemetryConfig?.enabled) {
+			runnerTelemetry = extractTelemetry({
+				runnerType,
+				resultMessage,
+				toolCounts: this.countToolCallsForCurrentTurn(sessionId),
+				model: session?.metadata?.model ?? runnerType,
+				sessionId,
+				entryId: `${sessionId}-${Date.now()}`,
+				repoId,
+				issueIdentifier: session?.issueContext?.issueIdentifier,
+			});
+			if (telemetryConfig.linearFooter) {
+				footer = formatTelemetryFooter(runnerTelemetry);
+			}
+			if (telemetryConfig.ndjsonDir) {
+				await this.getTelemetryWriter(telemetryConfig.ndjsonDir).appendTurn(
+					runnerTelemetry,
+				);
+			}
+			if (session) {
+				const prev = session.metadata?.telemetryTotals ?? emptyTotals();
+				session.metadata = {
+					...session.metadata,
+					telemetryTotals: accumulateTotals(prev, runnerTelemetry),
+				};
+				this.sessions.set(sessionId, session);
+			}
+		}
+
 		const resultEntry: CyrusAgentSessionEntry = {
 			// Set the appropriate session ID based on runner type
 			...(runnerType === "gemini"
@@ -674,17 +790,26 @@ export class AgentSessionManager extends EventEmitter {
 						? { cursorSessionId: resultMessage.session_id }
 						: { claudeSessionId: resultMessage.session_id }),
 			type: "result",
-			content,
+			content: content + footer,
 			metadata: {
 				timestamp: Date.now(),
 				durationMs: resultMessage.duration_ms,
 				isError: resultMessage.is_error,
+				runnerTelemetry,
 			},
 		};
 
 		// DON'T store locally - syncEntryToActivitySink will do it
 		// Sync to Linear
 		await this.syncEntryToActivitySink(resultEntry, sessionId);
+
+		// Telemetry totals are now written + activity synced. Emit a distinct
+		// event (NOT session_terminal — telemetry totals would not exist
+		// until after this method runs). EdgeWorker subscribes to post the
+		// rollup thought.
+		if (runnerTelemetry) {
+			this.emit("session_telemetry_ready", { sessionId });
+		}
 	}
 
 	/**
@@ -1656,6 +1781,18 @@ export class AgentSessionManager extends EventEmitter {
 			sessionId,
 			{ content: { type: "thought", body: `Using model: ${model}` } },
 			"model notification",
+		);
+	}
+
+	/**
+	 * Public wrapper for posting a thought activity. Used by EdgeWorker's
+	 * `session_telemetry_ready` listener to post the session-totals rollup.
+	 */
+	async postThoughtActivity(sessionId: string, body: string): Promise<void> {
+		await this.postActivity(
+			sessionId,
+			{ content: { type: "thought", body } },
+			"telemetry rollup",
 		);
 	}
 

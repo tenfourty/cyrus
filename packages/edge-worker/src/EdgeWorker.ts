@@ -447,7 +447,14 @@ export class EdgeWorker extends EventEmitter {
 					this.agentSessionManager,
 				);
 			},
+			undefined,
+			(repoId) => this.resolveTelemetryConfig(repoId),
 		);
+
+		// Subscribe to telemetry-ready event for session-totals rollup
+		this.agentSessionManager.on("session_telemetry_ready", (event) => {
+			void this.handleSessionTelemetryReady(event.sessionId);
+		});
 
 		// Initialize repositories with path resolution
 		for (const repo of config.repositories) {
@@ -1098,6 +1105,57 @@ export class EdgeWorker extends EventEmitter {
 	 * 2. Self-minted installation token from GitHub App credentials (self-hosted)
 	 * 3. Personal access token from GITHUB_TOKEN env var (fallback)
 	 */
+	/**
+	 * Resolve per-turn telemetry config for a given repository.
+	 * Shallow-merges per-repo telemetry over the global EdgeConfig.telemetry
+	 * so a repo can disable telemetry without redefining every field.
+	 */
+	private resolveTelemetryConfig(repoId: string): {
+		enabled: boolean;
+		linearFooter: boolean;
+		linearRollup: boolean;
+		ndjsonDir: string;
+		otlp?: {
+			endpoint: string;
+			protocol?: "grpc" | "http/protobuf";
+			headers?: Record<string, string>;
+		};
+	} {
+		const global = this.config.telemetry ?? {};
+		const repo =
+			this.config.repositories.find((r) => r.id === repoId)?.telemetry ?? {};
+		const merged = { ...global, ...repo };
+		return {
+			enabled: merged.enabled === true,
+			linearFooter: merged.linearFooter !== false,
+			linearRollup: merged.linearRollup !== false,
+			ndjsonDir: merged.ndjsonDir ?? `${this.config.cyrusHome}/telemetry`,
+			otlp: merged.otlp,
+		};
+	}
+
+	/**
+	 * Post the session-totals rollup thought when telemetry is ready.
+	 * Idempotent via session.metadata.rollupPosted so duplicate emissions
+	 * (e.g., if completeSession fires twice on a race) post only once.
+	 */
+	private async handleSessionTelemetryReady(sessionId: string): Promise<void> {
+		const session = this.agentSessionManager.getSession(sessionId);
+		if (!session) return;
+		const repoId = session.repositories[0]?.repositoryId;
+		if (!repoId) return;
+		const cfg = this.resolveTelemetryConfig(repoId);
+		if (!cfg.enabled || !cfg.linearRollup) return;
+		if (!session.metadata?.telemetryTotals) return;
+		if (session.metadata.rollupPosted) return;
+
+		const { formatTelemetryRollup } = await import("cyrus-core");
+		const body = formatTelemetryRollup(session.metadata.telemetryTotals);
+		await this.agentSessionManager.postThoughtActivity(sessionId, body);
+
+		session.metadata.rollupPosted = true;
+	}
+
 	private async resolveGitHubToken(
 		event: GitHubWebhookEvent,
 	): Promise<string | undefined> {
