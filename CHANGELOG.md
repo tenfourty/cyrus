@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+- Long-running sessions now auto-compact earlier so they stay survivable, instead of running the risk of wedging permanently with a "Prompt is too long" error. Operators can override the new default per-host or per-repo via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; the trade-off is more frequent (but bounded) compactions.
 
 ## [0.2.67] - 2026-07-25
 
