@@ -1445,7 +1445,7 @@ export class EdgeWorker extends EventEmitter {
 					{ excludeSlackMcp: true }, // Exclude Slack MCP server from GitHub sessions
 				);
 
-			const runner = this.createRunnerForType(runnerType, runnerConfig);
+			const runner = this.createRunnerForType(runnerType, runnerConfig, repository.id);
 
 			// Store the runner in the session manager
 			agentSessionManager.addAgentRunner(githubSessionId, runner);
@@ -2111,7 +2111,7 @@ ${taskSection}`;
 					{ excludeSlackMcp: true }, // Exclude Slack MCP server from GitLab sessions
 				);
 
-			const runner = this.createRunnerForType(runnerType, runnerConfig);
+			const runner = this.createRunnerForType(runnerType, runnerConfig, repository.id);
 
 			// Store the runner in the session manager
 			agentSessionManager.addAgentRunner(gitlabSessionId, runner);
@@ -4372,7 +4372,11 @@ ${taskSection}`;
 				`Label-based runner selection for new session: ${runnerType} (session ${sessionId})`,
 			);
 
-			const runner = this.createRunnerForType(runnerType, runnerConfig);
+			const runner = this.createRunnerForType(
+				runnerType,
+				runnerConfig,
+				repositories[0]?.id,
+			);
 
 			// Store runner by comment ID
 			agentSessionManager.addAgentRunner(sessionId, runner);
@@ -5081,14 +5085,21 @@ ${taskSection}`;
 	private createRunnerForType(
 		runnerType: "claude" | "gemini" | "codex" | "cursor",
 		config: AgentRunnerConfig,
+		repoId?: string,
 	): IAgentRunner {
 		switch (runnerType) {
 			case "claude": {
 				// Inject the hosted SessionStore at the last moment so it only
 				// attaches to Claude runners (the field is Claude-specific).
-				const claudeConfig = this.claudeSessionStore
+				// Same for OTLP — the Claude Agent SDK is the only runner whose
+				// CLI emits OTel natively (Codex/Gemini/Cursor stay NDJSON-only).
+				const otlp = repoId
+					? this.resolveTelemetryConfig(repoId).otlp
+					: undefined;
+				const baseConfig = this.claudeSessionStore
 					? { ...config, sessionStore: this.claudeSessionStore }
 					: config;
+				const claudeConfig = otlp ? { ...baseConfig, otlp } : baseConfig;
 				return new ClaudeRunner(claudeConfig, this.isWarmSessionsEnabled());
 			}
 			case "gemini":
@@ -6812,7 +6823,7 @@ ${input.userComment}
 			);
 
 		// Create the appropriate runner based on session state
-		const runner = this.createRunnerForType(runnerType, runnerConfig);
+		const runner = this.createRunnerForType(runnerType, runnerConfig, repository.id);
 
 		// Store runner
 		agentSessionManager.addAgentRunner(sessionId, runner);
