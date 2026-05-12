@@ -11,6 +11,10 @@ import type {
 	AgentSessionStatus,
 	AgentSessionType,
 } from "./issue-tracker/types.js";
+import type {
+	RunnerTelemetryRecord,
+	SessionTelemetryTotals,
+} from "./RunnerTelemetry.js";
 
 export interface IssueMinimal {
 	id: string;
@@ -111,9 +115,18 @@ export interface CyrusAgentSession {
 		tools?: string[];
 		permissionMode?: string;
 		apiKeySource?: string;
+		/**
+		 * @deprecated Use telemetryTotals.totalCostUsd. Field retained so
+		 * historical sessions on disk don't fail to deserialize.
+		 */
 		totalCostUsd?: number;
+		/** @deprecated Use telemetryTotals + per-entry runnerTelemetry. */
 		usage?: any;
 		commentId?: string;
+		/** Running totals across all turns in this session. Updated on each result. */
+		telemetryTotals?: SessionTelemetryTotals;
+		/** True once the session-terminal rollup activity has been posted (idempotency guard). */
+		rollupPosted?: boolean;
 	};
 }
 
@@ -135,5 +148,7 @@ export interface CyrusAgentSessionEntry {
 		durationMs?: number;
 		isError?: boolean;
 		sdkError?: SDKAssistantMessageError; // SDK error type (e.g., 'rate_limit') from assistant messages
+		/** Per-turn telemetry; populated on `result`-type entries when telemetry enabled. */
+		runnerTelemetry?: RunnerTelemetryRecord;
 	};
 }
