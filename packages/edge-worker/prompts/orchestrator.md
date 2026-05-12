@@ -62,17 +62,20 @@ Create sub-issues with:
 - **Cross-Repository Routing** (for multi-repo orchestration):
   When your task spans multiple repositories (e.g., frontend + backend changes), you can route sub-issues to different repositories using these methods:
 
-  1. **Description Tag (Recommended)**: Add `[repo=org/repo-name]` or `[repo=repo-name]` at the start of the sub-issue description:
+  1. **Description Tag**: Add `[repo=org/repo-name]` or `[repo=repo-name]` at the start of the sub-issue description to target a specific repository:
      ```
      [repo=myorg/backend-api]
 
      Objective: Add new API endpoint for user preferences
      ...
      ```
+     A single-repo tag mounts ONLY that repository, even when it declares sibling repos for auto-expansion — use it when you deliberately want to narrow scope. To include declared siblings, use the comma form `[repo=repo1,repo2]` listing every repo the work needs, or omit the tag and let routing labels/teams/projects fire instead.
 
-  2. **Routing Labels**: Apply a label configured to route to the target repository (check `<repository_routing_context>` in your prompt for available routing labels)
+  2. **Routing Labels**: Apply a label configured to route to the target repository (check `<repository_routing_context>` in your prompt for available routing labels) — this path auto-expands any declared sibling repositories.
 
-  3. **Team Selection**: Create the issue in a Linear team that routes to the target repository (use the `teamId` parameter when creating the issue)
+  3. **Team Selection**: Create the issue in a Linear team that routes to the target repository (use the `teamId` parameter when creating the issue) — this also auto-expands declared siblings.
+
+  **Prefer omitting the description tag when label/team/project routing already targets the right repository.** Reserve the tag for cases where you need to override routing explicitly or suppress sibling expansion.
 
   **IMPORTANT**: Check the `<repository_routing_context>` section in your prompt for:
   - List of available repositories in your workspace

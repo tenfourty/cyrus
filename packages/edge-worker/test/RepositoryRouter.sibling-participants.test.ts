@@ -214,6 +214,31 @@ describe("RepositoryRouter — siblingParticipants augmentation", () => {
 			// Tag explicitly named only `repo-a` — siblings must NOT be appended
 			expect(result.repositories.map((r) => r.id)).toEqual(["repo-a"]);
 		});
+
+		it("resolves a comma-separated bracketed tag [repo=a,b] to both named repos", async () => {
+			// Regression test: the bracketed tag regex must accept a comma in its
+			// character class, or a multi-repo bracketed tag silently matches
+			// nothing and the issue falls through to catch-all routing instead
+			// of the two repos the tag actually named.
+			const repoA = buildRepo("repo-a", { projectKeys: ["RepoA"] });
+			const repoB = buildRepo("repo-b");
+			const repoDeploy = buildRepo("repo-deploy");
+
+			const { router } = buildRouter({
+				issueDescription: "[repo=repo-b,repo-deploy] spans two repos",
+			});
+			const result = await router.determineRepositoryForWebhook(
+				buildWebhook(),
+				[repoA, repoB, repoDeploy],
+			);
+
+			expect(result.type).toBe("selected");
+			if (result.type !== "selected") return;
+			expect(result.repositories.map((r) => r.id)).toEqual([
+				"repo-b",
+				"repo-deploy",
+			]);
+		});
 	});
 
 	describe("deduplication", () => {

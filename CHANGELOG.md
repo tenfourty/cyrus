@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Per-repo `siblingParticipants` config field** — Each repository entry can now declare an optional `siblingParticipants: string[]` (repo IDs) so that when this repo is matched as primary by routing (label, project, team, or catch-all), the listed siblings are auto-appended to the session as participants. Useful for monorepo-adjacent setups where a primary code repo (e.g. `repo-a`) always wants a sibling ops repo (e.g. `repo-b`) for runbooks/deploy wrappers without requiring users to add `[repo=repo-a,repo-b]` to every issue. One-way directional — set on repo-a only and repo-b-routed issues stay single-repo unless mirrored. Description-tag routing (`[repo=...]`) is treated as an explicit override and skips sibling augmentation. Unknown sibling IDs are logged and skipped.
+- Repositories can now declare sibling repos that are automatically included whenever this repo is chosen as the target for an issue, so related work stays scoped together without needing a tag on every issue.
+
+### Changed
+- Cyrus's routing guidance for multi-repo workspaces now explains when a repository tag narrows a sub-issue to a single repo versus when it's better left off so declared sibling repos stay included. A tag can also target multiple repos at once, for example `[repo=repo1,repo2]`.
 
 ## [0.2.67] - 2026-07-25
 

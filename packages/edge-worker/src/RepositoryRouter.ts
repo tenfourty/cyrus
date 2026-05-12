@@ -540,6 +540,7 @@ export class RepositoryRouter {
 	 *
 	 * Supported syntaxes:
 	 * - `[repo=name]` or `[repo=name#branch]` — bracketed, single repo per tag
+	 * - `[repo=name,name2#branch]` — bracketed, comma-separated repos with optional branch
 	 * - `repo=name,name2#branch` — unbracketed, comma-separated repos with optional branch
 	 * - `repos=name,name2#branch` — same as above with plural "repos"
 	 *
@@ -553,8 +554,8 @@ export class RepositoryRouter {
 		const tags: { repo: string; branch?: string }[] = [];
 
 		// Pattern 1: Bracketed [repo=...] (existing syntax)
-		// Matches: [repo=name], [repo=name#branch], \[repo=name\]
-		const bracketRegex = /\\?\[repo=([a-zA-Z0-9_\-/.#]+)\\?\]/g;
+		// Matches: [repo=name], [repo=name#branch], [repo=name1,name2], \[repo=name\]
+		const bracketRegex = /\\?\[repo=([a-zA-Z0-9_\-/.#,]+)\\?\]/g;
 		for (const match of description.matchAll(bracketRegex)) {
 			if (match[1]) {
 				tags.push(...this.parseRepoValue(match[1]));
