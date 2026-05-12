@@ -279,8 +279,6 @@ export const TelemetryConfigSchema = z.object({
 	enabled: z.boolean().optional(),
 	/** Append per-turn footer to result activity body. Defaults true when enabled. */
 	linearFooter: z.boolean().optional(),
-	/** Post session-totals rollup thought on terminal state. Defaults true when enabled. */
-	linearRollup: z.boolean().optional(),
 	/** Directory for NDJSON files. Defaults `<cyrusHome>/telemetry`. */
 	ndjsonDir: z.string().optional(),
 	/**

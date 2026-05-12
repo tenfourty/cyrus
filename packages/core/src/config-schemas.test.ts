@@ -16,7 +16,6 @@ describe("telemetry config", () => {
 			telemetry: {
 				enabled: true,
 				linearFooter: false,
-				linearRollup: true,
 				ndjsonDir: "/tmp/telemetry",
 				otlp: {
 					endpoint: "http://localhost:4318",
@@ -28,6 +27,17 @@ describe("telemetry config", () => {
 		expect(parsed.telemetry?.enabled).toBe(true);
 		expect(parsed.telemetry?.linearFooter).toBe(false);
 		expect(parsed.telemetry?.otlp?.endpoint).toBe("http://localhost:4318");
+	});
+
+	it("strips unknown legacy `linearRollup` field with strict-mode behavior", () => {
+		// We intentionally removed linearRollup. Zod's default behavior strips
+		// unknown keys, so existing configs that set it continue to load —
+		// the field is just ignored. No backward-compat shim needed.
+		const parsed = EdgeConfigSchema.parse({
+			repositories: [],
+			telemetry: { enabled: true, linearRollup: true } as any,
+		});
+		expect((parsed.telemetry as any).linearRollup).toBeUndefined();
 	});
 
 	it("accepts telemetry override on RepositoryConfig", () => {

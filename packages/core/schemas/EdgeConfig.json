@@ -487,6 +487,49 @@
 					},
 					"autoResumeOnStartup": {
 						"type": "boolean"
+					},
+					"autoCompactThresholdPercent": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 99
+					},
+					"telemetry": {
+						"type": "object",
+						"properties": {
+							"enabled": {
+								"type": "boolean"
+							},
+							"linearFooter": {
+								"type": "boolean"
+							},
+							"ndjsonDir": {
+								"type": "string"
+							},
+							"otlp": {
+								"type": "object",
+								"properties": {
+									"endpoint": {
+										"type": "string"
+									},
+									"protocol": {
+										"type": "string",
+										"enum": ["grpc", "http/protobuf"]
+									},
+									"headers": {
+										"type": "object",
+										"propertyNames": {
+											"type": "string"
+										},
+										"additionalProperties": {
+											"type": "string"
+										}
+									}
+								},
+								"required": ["endpoint"],
+								"additionalProperties": false
+							}
+						},
+						"additionalProperties": false
 					}
 				},
 				"required": [
@@ -967,6 +1010,49 @@
 				},
 				"notifyOnResume": {
 					"type": "boolean"
+				}
+			},
+			"additionalProperties": false
+		},
+		"autoCompactThresholdPercent": {
+			"type": "integer",
+			"minimum": 1,
+			"maximum": 99
+		},
+		"telemetry": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"linearFooter": {
+					"type": "boolean"
+				},
+				"ndjsonDir": {
+					"type": "string"
+				},
+				"otlp": {
+					"type": "object",
+					"properties": {
+						"endpoint": {
+							"type": "string"
+						},
+						"protocol": {
+							"type": "string",
+							"enum": ["grpc", "http/protobuf"]
+						},
+						"headers": {
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {
+								"type": "string"
+							}
+						}
+					},
+					"required": ["endpoint"],
+					"additionalProperties": false
 				}
 			},
 			"additionalProperties": false

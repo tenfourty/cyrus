@@ -51,7 +51,6 @@ import type {
 	WebhookIssue,
 } from "cyrus-core";
 import {
-	AgentSessionStatus,
 	CLIIssueTrackerService,
 	CLIRPCServer,
 	createLogger,
@@ -557,14 +556,6 @@ export class EdgeWorker extends EventEmitter {
 					`Failed to persist state after session ${sessionId} reached terminal status: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			});
-		});
-
-		// Subscribe to telemetry-ready event for session-totals rollup. This
-		// fires after addResultEntry — by that point telemetryTotals are
-		// populated on session.metadata (session_terminal fires before that
-		// and would always see undefined totals).
-		this.agentSessionManager.on("session_telemetry_ready", (event) => {
-			void this.handleSessionTelemetryReady(event.sessionId);
 		});
 
 		// Initialize repositories with path resolution
@@ -1436,7 +1427,6 @@ export class EdgeWorker extends EventEmitter {
 	private resolveTelemetryConfig(repoId: string): {
 		enabled: boolean;
 		linearFooter: boolean;
-		linearRollup: boolean;
 		ndjsonDir: string;
 		otlp?: {
 			endpoint: string;
@@ -1451,48 +1441,9 @@ export class EdgeWorker extends EventEmitter {
 		return {
 			enabled: merged.enabled === true,
 			linearFooter: merged.linearFooter !== false,
-			linearRollup: merged.linearRollup !== false,
 			ndjsonDir: merged.ndjsonDir ?? `${this.config.cyrusHome}/telemetry`,
 			otlp: merged.otlp,
 		};
-	}
-
-	/**
-	 * Post the session-totals rollup thought when telemetry is ready AND
-	 * the session has reached a terminal status. The `session_telemetry_ready`
-	 * event fires after every successful `addResultEntry` (i.e., every turn),
-	 * but rollup should only post on the FINAL turn — otherwise a multi-turn
-	 * session would post a "1 turns" rollup after turn 1 and never update.
-	 *
-	 * On tenfourty-deploy, `completeSession` runs `updateSessionStatus` →
-	 * `addResultEntry`, so by the time this listener fires for the final
-	 * turn the status is already Complete/Error/Stale. Non-terminal turns
-	 * are filtered out here.
-	 *
-	 * `rollupPosted` flag still guards against duplicate emissions on
-	 * truly terminal sessions (e.g., if `completeSession` fires twice
-	 * on a race condition).
-	 */
-	private async handleSessionTelemetryReady(sessionId: string): Promise<void> {
-		const session = this.agentSessionManager.getSession(sessionId);
-		if (!session) return;
-		const isTerminal =
-			session.status === AgentSessionStatus.Complete ||
-			session.status === AgentSessionStatus.Error ||
-			session.status === AgentSessionStatus.Stale;
-		if (!isTerminal) return;
-		const repoId = session.repositories[0]?.repositoryId;
-		if (!repoId) return;
-		const cfg = this.resolveTelemetryConfig(repoId);
-		if (!cfg.enabled || !cfg.linearRollup) return;
-		if (!session.metadata?.telemetryTotals) return;
-		if (session.metadata.rollupPosted) return;
-
-		const { formatTelemetryRollup } = await import("cyrus-core");
-		const body = formatTelemetryRollup(session.metadata.telemetryTotals);
-		await this.agentSessionManager.postThoughtActivity(sessionId, body);
-
-		session.metadata.rollupPosted = true;
 	}
 
 	private async resolveGitHubToken(
@@ -5359,6 +5310,13 @@ ${taskSection}`;
 		const isTextStopRequest = /^\s*stop(\s+session|\s+working)?[\s.!?]*$/i.test(
 			activityBody,
 		);
+
+		// Reset the per-session post-response guard on every tracker that
+		// has been told about this session. A new prompt starts a new turn,
+		// so prior turn's closing response/error no longer applies.
+		for (const tracker of this.issueTrackers.values()) {
+			tracker.notifyTurnStarted(agentSessionId);
+		}
 
 		// Branch 1: Handle stop signal (checked FIRST, before any routing work)
 		// Per CLAUDE.md: "an agentSession MUST already exist" for stop signals

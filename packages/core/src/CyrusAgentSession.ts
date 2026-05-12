@@ -11,10 +11,7 @@ import type {
 	AgentSessionStatus,
 	AgentSessionType,
 } from "./issue-tracker/types.js";
-import type {
-	RunnerTelemetryRecord,
-	SessionTelemetryTotals,
-} from "./RunnerTelemetry.js";
+import type { RunnerTelemetryRecord } from "./RunnerTelemetry.js";
 
 export interface IssueMinimal {
 	id: string;
@@ -116,17 +113,13 @@ export interface CyrusAgentSession {
 		permissionMode?: string;
 		apiKeySource?: string;
 		/**
-		 * @deprecated Use telemetryTotals.totalCostUsd. Field retained so
+		 * @deprecated Set by older builds, no longer written. Retained so
 		 * historical sessions on disk don't fail to deserialize.
 		 */
 		totalCostUsd?: number;
-		/** @deprecated Use telemetryTotals + per-entry runnerTelemetry. */
+		/** @deprecated Set by older builds. Use per-entry `runnerTelemetry` + NDJSON. */
 		usage?: any;
 		commentId?: string;
-		/** Running totals across all turns in this session. Updated on each result. */
-		telemetryTotals?: SessionTelemetryTotals;
-		/** True once the session-terminal rollup activity has been posted (idempotency guard). */
-		rollupPosted?: boolean;
 	};
 }
 

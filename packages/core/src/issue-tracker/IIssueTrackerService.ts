@@ -707,6 +707,18 @@ export interface IIssueTrackerService {
 		input: AgentActivityCreateInput,
 	): Promise<AgentActivityPayload>;
 
+	/**
+	 * Notify the tracker that a new turn has started for the given session,
+	 * resetting any per-session "turn closed" guard so that subsequent
+	 * `thought` / `action` / `elicitation` activities are accepted without
+	 * the "post-response demotion" warning.
+	 *
+	 * Called from the EdgeWorker's prompted-webhook handler. Trackers that
+	 * have no turn-end inference (CLI test adapter, custom trackers) may
+	 * implement this as a no-op.
+	 */
+	notifyTurnStarted(sessionId: string): void;
+
 	// ========================================================================
 	// FILE OPERATIONS
 	// ========================================================================
