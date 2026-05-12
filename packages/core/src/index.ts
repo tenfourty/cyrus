@@ -1,5 +1,21 @@
 // Logging
 
+// Telemetry
+export {
+	accumulateTotals,
+	type ClaudeProviderExtras,
+	type ClaudeTelemetry,
+	type CodexTelemetry,
+	type CursorTelemetry,
+	emptyTotals,
+	formatTelemetryFooter,
+	formatTelemetryRollup,
+	type GeminiTelemetry,
+	type RunnerTelemetryBase,
+	type RunnerTelemetryRecord,
+	type SessionTelemetryTotals,
+} from "./RunnerTelemetry.js";
+
 // Error reporting
 export type {
 	ErrorReporter,
