@@ -353,6 +353,28 @@ export class RunnerConfigBuilder {
 			config.resumeSessionId = input.resumeSessionId;
 		}
 
+		// Cyrus auto-compact threshold → CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+		// for the Claude subprocess. Kept OUTSIDE `buildSandboxConfig`
+		// (which only runs when sandboxSettings is set) so the env-var
+		// reaches sandbox-disabled installs too — that was the original
+		// bug: the config field worked end-to-end on sandbox-enabled
+		// hosts and was silently inert on every other install. Merges
+		// with `additionalEnv` already produced by the sandbox path so
+		// the CA-cert vars (when present) are preserved.
+		if (
+			runnerType === "claude" &&
+			input.autoCompactThresholdPercent !== undefined
+		) {
+			const existing =
+				(config.additionalEnv as Record<string, string> | undefined) ?? {};
+			config.additionalEnv = {
+				...existing,
+				CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
+					input.autoCompactThresholdPercent,
+				),
+			};
+		}
+
 		if (input.maxTurns !== undefined) {
 			config.maxTurns = input.maxTurns;
 		}
@@ -454,21 +476,6 @@ export class RunnerConfigBuilder {
 				AWS_CA_BUNDLE: input.egressCaCertPath,
 				// Deno
 				DENO_CERT: input.egressCaCertPath,
-			};
-		}
-
-		// Thread the resolved Cyrus auto-compact threshold into the
-		// Claude subprocess. The Claude Code binary reads this env var
-		// as a float 0-100 and lowers the compaction trigger from its
-		// default ~93.5% to the requested percentage. Coexists with the
-		// session-env fallback of 50 — when this value is set, it takes
-		// precedence in the env spread chain via `additionalEnv`.
-		if (input.autoCompactThresholdPercent !== undefined) {
-			result.additionalEnv = {
-				...((result.additionalEnv as Record<string, string>) ?? {}),
-				CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
-					input.autoCompactThresholdPercent,
-				),
 			};
 		}
 
