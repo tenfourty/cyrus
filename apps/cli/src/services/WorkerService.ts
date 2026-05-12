@@ -5,6 +5,7 @@ import { EdgeWorker } from "cyrus-edge-worker";
 import { SlackEventTransport } from "cyrus-slack-event-transport";
 import { DEFAULT_SERVER_PORT, parsePort } from "../config/constants.js";
 import type { Workspace } from "../config/types.js";
+import { buildEdgeWorkerConfig } from "./buildEdgeWorkerConfig.js";
 import type { ConfigService } from "./ConfigService.js";
 import type { Logger } from "./Logger.js";
 
@@ -182,56 +183,21 @@ export class WorkerService {
 	}): Promise<void> {
 		const { repositories, ngrokAuthToken, onOAuthCallback } = params;
 
-		// Determine if using external host
-		const isExternalHost =
-			process.env.CYRUS_HOST_EXTERNAL?.toLowerCase().trim() === "true";
-
 		// Load config once for model defaults
 		const edgeConfig = this.configService.load();
 
-		// Create EdgeWorker configuration
+		// Assemble EdgeWorkerConfig via the buildEdgeWorkerConfig seam so that
+		// every top-level EdgeConfig field flows through automatically — see
+		// the helper's test file for the regression that motivated extracting it.
 		const config: EdgeWorkerConfig = {
-			version: this.version,
-			repositories,
-			cyrusHome: this.cyrusHome,
-			defaultAllowedTools:
-				process.env.ALLOWED_TOOLS?.split(",").map((t) => t.trim()) || [],
-			defaultDisallowedTools:
-				process.env.DISALLOWED_TOOLS?.split(",").map((t) => t.trim()) ||
-				undefined,
-			// Model configuration: environment variables take precedence over config file.
-			// Legacy env vars/keys are still accepted for backwards compatibility.
-			claudeDefaultModel:
-				process.env.CYRUS_CLAUDE_DEFAULT_MODEL ||
-				process.env.CYRUS_DEFAULT_MODEL ||
-				edgeConfig.claudeDefaultModel ||
-				edgeConfig.defaultModel,
-			claudeDefaultFallbackModel:
-				process.env.CYRUS_CLAUDE_DEFAULT_FALLBACK_MODEL ||
-				process.env.CYRUS_DEFAULT_FALLBACK_MODEL ||
-				edgeConfig.claudeDefaultFallbackModel ||
-				edgeConfig.defaultFallbackModel,
-			geminiDefaultModel:
-				process.env.CYRUS_GEMINI_DEFAULT_MODEL || edgeConfig.geminiDefaultModel,
-			codexDefaultModel:
-				process.env.CYRUS_CODEX_DEFAULT_MODEL || edgeConfig.codexDefaultModel,
-			defaultRunner:
-				(process.env.CYRUS_DEFAULT_RUNNER as
-					| "claude"
-					| "gemini"
-					| "codex"
-					| "cursor"
-					| undefined) || edgeConfig.defaultRunner,
-			issueUpdateTrigger: edgeConfig.issueUpdateTrigger,
-			promptDefaults: edgeConfig.promptDefaults,
-			linearWorkspaces: edgeConfig.linearWorkspaces,
-			webhookBaseUrl: process.env.CYRUS_BASE_URL,
-			serverPort: parsePort(process.env.CYRUS_SERVER_PORT, DEFAULT_SERVER_PORT),
-			serverHost: isExternalHost ? "0.0.0.0" : "localhost",
-			ngrokAuthToken,
-			// User access control configuration
-			userAccessControl: edgeConfig.userAccessControl,
-			sandbox: edgeConfig.sandbox,
+			...buildEdgeWorkerConfig({
+				edgeConfig,
+				env: process.env,
+				repositories,
+				cyrusHome: this.cyrusHome,
+				version: this.version,
+				ngrokAuthToken,
+			}),
 			handlers: {
 				createWorkspace: async (
 					issue: Issue,
