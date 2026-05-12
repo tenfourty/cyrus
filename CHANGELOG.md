@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Per-turn AI usage telemetry (off by default)** — Optional capture of per-turn cost, tokens (input/output/cache), duration, model, and tool-call counts. Enable with `telemetry.enabled: true` in config (global or per-repo override via `RepositoryConfig.telemetry`). When on: a one-line footer (`$cost · in/out · cache · duration · model · tools`) appears beneath each agent response in Linear, a session-totals rollup posts when the session ends, and per-turn records are appended to `~/.cyrus/telemetry/<sessionId>.jsonl` for offline analysis. Tool counts are computed from session entries (truthful across Claude/Codex/Gemini/Cursor — does not trust runner-reported numbers, which Codex hardcodes to 1 and Gemini misuses). When `telemetry.otlp.endpoint` is set, the Claude Agent SDK subprocess additionally exports OpenTelemetry traces, metrics, and logs directly to that collector (non-Claude runners write NDJSON only — their CLIs do not emit OTel natively). Off by default — no behavior change for existing installs.
+
 ### Changed
 - **Slack mention prompt nudges agents toward `linear_agent_give_feedback` for live child sessions** — When responding in Slack, Cyrus is now told to send mid-flight corrections to a running child agent session via `mcp__cyrus-tools__linear_agent_give_feedback` instead of falling back to `mcp__linear__save_comment`. Produces a stronger signal when correcting work that is already in progress. ([CYPACK-1189](https://linear.app/ceedar/issue/CYPACK-1189), [#1198](https://github.com/cyrusagents/cyrus/pull/1198))
 
