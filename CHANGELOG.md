@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Hard failures (e.g. "Prompt is too long" on a too-large resume) are no longer mis-classified as successful completions.** The Claude Agent SDK encodes some failure modes as a result message with `subtype: "success"` and `is_error: true`, with the error text in `result`. Cyrus's status decision in `completeSession` only checked `subtype`, so the session was mis-flipped to `Complete` (instead of `Error`) and the operator-facing log line read `Session completed (subtype: success)` despite the SDK having clearly flagged an error. The user-visible Linear timeline still posted the right error activity (a separate code path checked `is_error` correctly), so the inconsistency was operator-side only — but it made grepping logs for failures unreliable. Status now gates on both `subtype === "success"` and `!is_error`; the log line carries both fields plus the error text on the error path.
+
 ### Changed
 - **Slack mention prompt nudges agents toward `linear_agent_give_feedback` for live child sessions** — When responding in Slack, Cyrus is now told to send mid-flight corrections to a running child agent session via `mcp__cyrus-tools__linear_agent_give_feedback` instead of falling back to `mcp__linear__save_comment`. Produces a stronger signal when correcting work that is already in progress. ([CYPACK-1189](https://linear.app/ceedar/issue/CYPACK-1189), [#1198](https://github.com/cyrusagents/cyrus/pull/1198))
 
