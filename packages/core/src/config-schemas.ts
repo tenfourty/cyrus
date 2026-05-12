@@ -269,6 +269,36 @@ export const LinearWorkspaceConfigSchema = z.object({
 /**
  * Configuration for a single repository/workspace pair
  */
+/**
+ * Optional per-turn telemetry configuration. Off by default.
+ * Settable globally on EdgeConfig and overridable per-repo on RepositoryConfig
+ * via a shallow merge (repo fields win when set).
+ */
+export const TelemetryConfigSchema = z.object({
+	/** Master switch. Off by default — when false (or absent) no telemetry side effects. */
+	enabled: z.boolean().optional(),
+	/** Append per-turn footer to result activity body. Defaults true when enabled. */
+	linearFooter: z.boolean().optional(),
+	/** Post session-totals rollup thought on terminal state. Defaults true when enabled. */
+	linearRollup: z.boolean().optional(),
+	/** Directory for NDJSON files. Defaults `<cyrusHome>/telemetry`. */
+	ndjsonDir: z.string().optional(),
+	/**
+	 * Tier-1 OTLP passthrough — when `endpoint` is set, Cyrus injects
+	 * CLAUDE_CODE_ENABLE_TELEMETRY=1 plus OTEL_* env vars into the
+	 * Claude Agent SDK subprocess so its native OTel export ships
+	 * directly to the operator's collector. Non-Claude runners are
+	 * unaffected (their CLIs don't emit OTel natively in v1).
+	 */
+	otlp: z
+		.object({
+			endpoint: z.string(),
+			protocol: z.enum(["grpc", "http/protobuf"]).optional(),
+			headers: z.record(z.string(), z.string()).optional(),
+		})
+		.optional(),
+});
+
 export const RepositoryConfigSchema = z.object({
 	// Repository identification
 	id: z.string(),
@@ -353,6 +383,9 @@ export const RepositoryConfigSchema = z.object({
 	 * an equivalent as their SDKs expose one).
 	 */
 	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
+
+	/** Per-repo override of EdgeConfig.telemetry (shallow merge — repo fields win). */
+	telemetry: TelemetryConfigSchema.optional(),
 });
 
 /**
@@ -505,6 +538,16 @@ export const EdgeConfigSchema = z.object({
 	 * too thin a margin on long-running sessions.
 	 */
 	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
+
+	/**
+	 * Per-turn AI usage telemetry. Off by default. When enabled, appends
+	 * a one-line footer to each agent response in Linear, posts a
+	 * session-totals rollup on terminal state, and writes per-turn
+	 * NDJSON records to `<cyrusHome>/telemetry/<sessionId>.jsonl` (or
+	 * the configured ndjsonDir) for offline analysis. Per-repo settings
+	 * on RepositoryConfig.telemetry override these globally.
+	 */
+	telemetry: TelemetryConfigSchema.optional(),
 });
 
 /**
@@ -617,6 +660,7 @@ export type RepositoryConfigPayload = z.infer<
 	typeof RepositoryConfigPayloadSchema
 >;
 export type EdgeConfigPayload = z.infer<typeof EdgeConfigPayloadSchema>;
+export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
 
 /**
  * Assert that a repository has a Linear workspace ID and return it.
