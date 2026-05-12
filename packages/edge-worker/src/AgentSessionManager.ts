@@ -384,9 +384,18 @@ export class AgentSessionManager extends EventEmitter {
 		this.activeTasksBySession.delete(sessionId);
 
 		const wasStopRequested = this.consumeStopRequest(sessionId);
+		// The SDK encodes some hard failures (notably "Prompt is too long"
+		// on a too-large resume) as a result with subtype: "success" AND
+		// is_error: true — `subtype` is the envelope shape (success means
+		// "the turn produced a normal result message" rather than
+		// error_max_turns / error_during_execution), while `is_error` is
+		// the actual failure flag. Gate on both: success status only when
+		// the envelope is "success" *and* is_error is not set.
+		const isErrorResult =
+			"is_error" in resultMessage && resultMessage.is_error === true;
 		const status = wasStopRequested
 			? AgentSessionStatus.Error
-			: resultMessage.subtype === "success"
+			: resultMessage.subtype === "success" && !isErrorResult
 				? AgentSessionStatus.Complete
 				: AgentSessionStatus.Error;
 
@@ -410,7 +419,19 @@ export class AgentSessionManager extends EventEmitter {
 			await this.handleChildSessionCompletion(sessionId, resultMessage);
 		}
 
-		log.info(`Session completed (subtype: ${resultMessage.subtype})`);
+		if (isErrorResult) {
+			const errorText =
+				"result" in resultMessage && typeof resultMessage.result === "string"
+					? resultMessage.result
+					: "errors" in resultMessage && Array.isArray(resultMessage.errors)
+						? resultMessage.errors.join("; ")
+						: "(no error text)";
+			log.info(
+				`Session ended with error (subtype: ${resultMessage.subtype}, is_error: true): ${errorText}`,
+			);
+		} else {
+			log.info(`Session completed (subtype: ${resultMessage.subtype})`);
+		}
 	}
 
 	/**
