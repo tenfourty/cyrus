@@ -7,7 +7,7 @@
  * This ensures comprehensive test coverage and catches regressions in prompt structure.
  */
 
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createTestWorker, scenario } from "./prompt-assembly-utils.js";
 
 describe("Prompt Assembly - Routing Context", () => {
@@ -180,15 +180,15 @@ When creating sub-issues that should be handled in a DIFFERENT repository, use o
 **IMPORTANT - Routing Priority Order:**
 The system evaluates routing methods in this strict priority order. The FIRST match wins:
 
-1. **Description Tag (Priority 1 - Highest, Recommended)**: Add \`[repo=repo-name]\` to the sub-issue description.
-   - Multiple repos: \`[repo=repo1]\` and \`[repo=repo2]\`, or \`repos=repo1,repo2\`
+1. **Description Tag (Priority 1 - Highest)**: Add \`[repo=repo-name]\` to the sub-issue description.
+   - Multiple repos: \`[repo=repo1,repo2]\` or \`repos=repo1,repo2\`
    - Base branch override: \`[repo=repo-name#branch-name]\` to target a specific branch instead of the default
    - Unbracketed syntax also works: \`repo=repo-name\` or \`repo=repo-name#branch\`
 2. **Routing Labels (Priority 2)**: Apply a label configured to route to the target repository.
 3. **Project Assignment (Priority 3)**: Add the issue to a project that routes to the target repository.
 4. **Team Selection (Priority 4 - Lowest)**: Create the issue in a Linear team that routes to the target repository.
 
-For reliable cross-repository routing, prefer Description Tags as they are explicit and unambiguous.
+**Description tags are a hard scope override.** A single-repo tag like \`[repo=A]\` mounts ONLY repo A into the spawned session, even when repo A declares \`<sibling_participants>\` in this context. To include declared siblings, use the comma form \`[repo=A,B]\` listing every repo the work needs, OR omit the tag and let routing labels/teams/projects fire — that path auto-expands declared siblings. Prefer omitting the tag when label/team/project routing already targets the right primary; reserve single-repo tags for cases where you explicitly want to suppress sibling expansion.
 </description>
 
 <available_repositories>
@@ -398,6 +398,49 @@ Check workspace isolation
 			.expectPromptType("label-based")
 			.expectComponents("issue-context", "user-comment")
 			.verify();
+	});
+
+	it("surfaces <sibling_participants> for repos with declared siblings and includes the hard-scope-override clause", () => {
+		const coveRepo = {
+			id: "repo-cove",
+			name: "cove",
+			repositoryPath: "/test/cove",
+			workspaceBaseDir: "/test/workspace",
+			linearWorkspaceId: "ws-cove",
+			baseBranch: "main",
+			githubUrl: "https://github.com/myorg/cove",
+			routingLabels: ["cove"],
+			siblingParticipants: ["repo-cove-ovh"],
+			labelPrompts: {
+				orchestrator: { labels: ["Orchestrator"] },
+			},
+		};
+		const coveOvhRepo = {
+			id: "repo-cove-ovh",
+			name: "cove-ovh",
+			repositoryPath: "/test/cove-ovh",
+			workspaceBaseDir: "/test/workspace",
+			linearWorkspaceId: "ws-cove",
+			baseBranch: "main",
+			githubUrl: "https://github.com/myorg/cove-ovh",
+			routingLabels: ["cove-ovh"],
+			siblingParticipants: ["repo-cove"],
+		};
+
+		const worker = createTestWorker([coveRepo, coveOvhRepo]);
+		const promptBuilder = (worker as any).promptBuilder as {
+			generateRoutingContext: (r: typeof coveRepo) => string;
+		};
+		const context = promptBuilder.generateRoutingContext(coveRepo);
+
+		expect(context).toContain(
+			`<sibling_participants>"cove-ovh"</sibling_participants>`,
+		);
+		expect(context).toContain(
+			`<sibling_participants>"cove"</sibling_participants>`,
+		);
+		expect(context).toContain("hard scope override");
+		expect(context).toContain("[repo=A,B]");
 	});
 
 	it("generateRoutingContextForAllWorkspaces should include routing contexts for each multi-repo workspace", () => {
