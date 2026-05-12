@@ -25,6 +25,7 @@ import {
 	StreamingPrompt,
 } from "cyrus-core";
 import dotenv from "dotenv";
+import { getAllTools } from "./config.js";
 import { ClaudeMessageFormatter, type IMessageFormatter } from "./formatter.js";
 import { buildHomeDirectoryDisallowedTools } from "./home-directory-restrictions.js";
 import {
@@ -514,6 +515,32 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				processedAllowedTools = processedAllowedTools
 					? [...processedAllowedTools, ...directoryTools]
 					: directoryTools;
+			}
+
+			// When canUseTool is configured, the parent's effective permission
+			// surface is "whatever canUseTool allows" — currently a blanket
+			// allow for every tool except AskUserQuestion (see
+			// createCanUseToolCallback). The configured `allowedTools` is
+			// therefore narrower than reality, which causes no problem for
+			// the parent conversation but breaks Agent-tool-dispatched
+			// subagents: they inherit `allowedTools` from the parent but NOT
+			// `canUseTool` (the callback is bound to the top-level query()
+			// and does not propagate to subagent conversations). The result
+			// is that subagents see "Permission to use Bash has been denied"
+			// for every built-in tool not on the narrow list — silently
+			// breaking subagent parallelism on Cyrus sessions.
+			//
+			// Widen here so the inheritance produces the same effective tool
+			// set the parent already enjoys. `disallowedTools` (home-dir
+			// deny, repo-level denies) still takes precedence per SDK
+			// semantics, so the safety envelope is unchanged.
+			if (this.canUseToolCallback) {
+				processedAllowedTools = [
+					...new Set([
+						...(processedAllowedTools ?? []),
+						...getAllTools(),
+					]),
+				];
 			}
 
 			// Build home directory restrictions: deny Read on everything in ~/
