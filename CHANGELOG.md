@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Routing-context prompt now surfaces `<sibling_participants>` and clarifies single-repo tag scope** — In multi-repo workspaces, the `<repository_routing_context>` block (consumed by both Linear orchestrator sessions and the Slack `@`-mention adapter) now lists each repo's declared `siblingParticipants` so the agent can see what auto-expansion is configured. The description also makes explicit that a single-repo description tag like `[repo=A]` is a hard scope-down (mounts only A even when A has declared siblings), and recommends either omitting the tag — letting label/team/project routing fire and auto-expand siblings — or using the comma form `[repo=A,B]` when work genuinely spans multiple repos. The Slack adapter's orchestration notes were rewritten accordingly. Fixes a class of misroutings where a Slack-originated issue creation picked a confident single-repo tag and produced sessions scoped too narrowly to read sibling repos, surfacing as benign-but-noisy permission denials in `providerExtras.permissionDenials`.
+
 ### Added
 - **Per-repo `siblingParticipants` config field** — Each repository entry can now declare an optional `siblingParticipants: string[]` (repo IDs) so that when this repo is matched as primary by routing (label, project, team, or catch-all), the listed siblings are auto-appended to the session as participants. Useful for monorepo-adjacent setups where a primary code repo (e.g. `repoA`) always wants a sibling ops repo (e.g. `repoB`) for runbooks/deploy wrappers without requiring users to add `[repo=repoA,repoB]` to every issue. One-way directional — set on repoA only and repoB-routed issues stay single-repo unless mirrored. Description-tag routing (`[repo=...]`) is treated as an explicit override and skips sibling augmentation. Unknown sibling IDs are logged and skipped.
 
