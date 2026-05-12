@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
 	availableTools,
+	excludeInterceptedTools,
 	getAllTools,
 	getCoordinatorTools,
 	getReadOnlyTools,
 	getSafeTools,
+	INTERCEPTED_TOOLS,
 	readOnlyTools,
 	type ToolName,
 	writeTools,
@@ -199,6 +201,53 @@ describe("config", () => {
 			writeTools.forEach((tool) => {
 				expect(typeof tool).toBe("string");
 			});
+		});
+	});
+
+	describe("INTERCEPTED_TOOLS / excludeInterceptedTools", () => {
+		it("should not currently list any INTERCEPTED_TOOLS name in availableTools", () => {
+			// AskUserQuestion is conditionally advertised by the SDK (only
+			// present in the tool registry when a canUseTool callback is
+			// supplied), so scripts/extract-claude-tools.sh's bare `claude -p`
+			// probe can never observe it. That is exactly why it is absent
+			// from availableTools today. If this ever starts failing, do NOT
+			// "fix" it by relying on availableTools staying AskUserQuestion-free
+			// — fix it by confirming excludeInterceptedTools (below) still
+			// strips INTERCEPTED_TOOLS names from anything derived from
+			// availableTools, e.g. the subagent allowedTools widening in
+			// ClaudeRunner.ts.
+			for (const tool of INTERCEPTED_TOOLS) {
+				expect(availableTools).not.toContain(tool);
+			}
+		});
+
+		it("excludeInterceptedTools should strip every INTERCEPTED_TOOLS name from an arbitrary tool list", () => {
+			// Regression guard for the real trap: a future SDK-bump refresh of
+			// availableTools (per CLAUDE.md item 7) could reintroduce
+			// AskUserQuestion now that we know it's conditionally advertised.
+			// Simulate that by constructing a tool list that includes it
+			// directly, independent of what availableTools currently
+			// contains, and assert excludeInterceptedTools always removes it.
+			const hypotheticalRefreshedTools = [
+				...availableTools,
+				...INTERCEPTED_TOOLS,
+			];
+
+			const widened = excludeInterceptedTools(hypotheticalRefreshedTools);
+
+			for (const tool of INTERCEPTED_TOOLS) {
+				expect(widened).not.toContain(tool);
+			}
+			// Everything else should survive untouched.
+			for (const tool of availableTools) {
+				expect(widened).toContain(tool);
+			}
+		});
+
+		it("excludeInterceptedTools should be a no-op when no intercepted tools are present", () => {
+			expect(excludeInterceptedTools(availableTools)).toEqual([
+				...availableTools,
+			]);
 		});
 	});
 

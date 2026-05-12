@@ -30,6 +30,11 @@ import {
 	StreamingPrompt,
 } from "cyrus-core";
 import dotenv from "dotenv";
+import {
+	excludeInterceptedTools,
+	getAllTools,
+	INTERCEPTED_TOOLS,
+} from "./config.js";
 import { ClaudeMessageFormatter, type IMessageFormatter } from "./formatter.js";
 import { buildHomeDirectoryDisallowedTools } from "./home-directory-restrictions.js";
 import {
@@ -316,8 +321,11 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				toolUseID: string;
 			},
 		): Promise<PermissionResult> => {
-			// Only intercept AskUserQuestion tool
-			if (toolName !== "AskUserQuestion") {
+			// Only intercept tools in INTERCEPTED_TOOLS (currently just
+			// AskUserQuestion). See the INTERCEPTED_TOOLS doc comment in
+			// config.ts for why this list must stay in sync with the
+			// subagent allowedTools widening below.
+			if (!(INTERCEPTED_TOOLS as readonly string[]).includes(toolName)) {
 				// Allow all other tools to proceed normally
 				return {
 					behavior: "allow",
@@ -540,6 +548,47 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				processedAllowedTools = processedAllowedTools
 					? [...processedAllowedTools, ...directoryTools]
 					: directoryTools;
+			}
+
+			// When canUseTool is configured, the parent's effective permission
+			// surface is "whatever canUseTool allows". createCanUseToolCallback
+			// only intercepts INTERCEPTED_TOOLS (currently just
+			// `AskUserQuestion`) and allows every other tool through
+			// unconditionally — so for everything except those intercepted
+			// names, the parent's real ceiling is the SDK's own tool
+			// registry, not the configured `allowedTools`. `AskUserQuestion`
+			// (along with `EnterPlanMode`/`ExitPlanMode`) is conditionally
+			// advertised by the SDK: it only appears in the tool registry
+			// when the host supplies a `canUseTool` callback, which Cyrus
+			// always does whenever `onAskUserQuestion` is configured — so it
+			// is live here, not dead code.
+			//
+			// The configured `allowedTools` is therefore narrower than
+			// reality, which causes no problem for the parent conversation
+			// (canUseTool mediates it directly) but breaks Agent-tool-
+			// dispatched subagents: they inherit `allowedTools` from the
+			// parent but NOT `canUseTool` (the callback is bound to the
+			// top-level query() and does not propagate to subagent
+			// conversations). The result is that subagents see "Permission
+			// to use Bash has been denied" for every built-in tool not on
+			// the narrow list — silently breaking subagent parallelism on
+			// Cyrus sessions.
+			//
+			// Widen here so the inheritance produces the same effective tool
+			// set the parent already enjoys — but explicitly EXCLUDE
+			// INTERCEPTED_TOOLS from the widened list. Subagents don't get
+			// `canUseTool`, so if `AskUserQuestion` were included here it
+			// would reach the SDK's default-allow instead of being
+			// intercepted, bypassing the one-question-at-a-time guard and
+			// the Linear question-answering flow entirely, with no test
+			// failing to catch it. `disallowedTools` (home-dir deny,
+			// repo-level denies) still takes precedence per SDK semantics,
+			// so the rest of the safety envelope is unchanged.
+			if (this.canUseToolCallback) {
+				const widenedTools = excludeInterceptedTools(getAllTools());
+				processedAllowedTools = [
+					...new Set([...(processedAllowedTools ?? []), ...widenedTools]),
+				];
 			}
 
 			// Build home directory restrictions: deny Read on everything in ~/

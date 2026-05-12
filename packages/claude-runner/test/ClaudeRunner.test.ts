@@ -25,6 +25,7 @@ vi.mock("os", () => ({
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { AbortError, ClaudeRunner } from "../src/ClaudeRunner";
+import { INTERCEPTED_TOOLS } from "../src/config";
 import type { ClaudeRunnerConfig, SDKMessage } from "../src/types";
 
 describe("ClaudeRunner", () => {
@@ -893,6 +894,116 @@ describe("ClaudeRunner", () => {
 
 			// Readable log logic would filter out TaskCreate but keep Read
 			// (This tests the filtering logic in writeReadableLogEntry)
+		});
+	});
+
+	describe("allowedTools widening for subagent inheritance", () => {
+		it("widens allowedTools to cover all built-in tools when canUseTool is configured", async () => {
+			// Background: subagents dispatched via the Agent tool inherit the
+			// parent's `allowedTools` but NOT the parent's `canUseTool`
+			// callback (canUseTool is bound to the top-level conversation per
+			// SDK). When the parent passes a narrow allowedTools and relies on
+			// canUseTool's blanket-allow for everything else, the subagent
+			// inherits only the narrow list and the SDK auto-denies every
+			// other tool. Widening allowedTools at the parent matches what
+			// canUseTool effectively permits, so the inherited list lets
+			// subagents call Bash/Edit/Read/Write/Skill.
+			const runnerWithAskCallback = new ClaudeRunner({
+				...defaultConfig,
+				allowedTools: ["mcp__linear", "Read(./.claude/**)"],
+				onAskUserQuestion: vi.fn(),
+			});
+
+			mockQuery.mockImplementation(async function* () {
+				yield {
+					type: "assistant",
+					message: { content: [{ type: "text", text: "ok" }] },
+					parent_tool_use_id: null,
+					session_id: "test",
+				} as any;
+			});
+
+			await runnerWithAskCallback.start("hello");
+
+			const call = mockQuery.mock.calls[0][0];
+			const passed: string[] = call.options.allowedTools;
+			expect(passed).toEqual(
+				expect.arrayContaining(["mcp__linear", "Read(./.claude/**)"]),
+			);
+			expect(passed).toEqual(
+				expect.arrayContaining([
+					"Bash",
+					"Edit(**)",
+					"Write(**)",
+					"Read(**)",
+					"Skill",
+				]),
+			);
+		});
+
+		it("does not widen allowedTools when canUseTool is not configured", async () => {
+			// If the operator did not wire onAskUserQuestion, the parent has
+			// no canUseTool callback — the SDK's default-deny is the
+			// permission model, and we must respect a narrow allowedTools
+			// instead of silently widening.
+			const runnerWithoutAskCallback = new ClaudeRunner({
+				...defaultConfig,
+				allowedTools: ["mcp__linear", "Read(./.claude/**)"],
+			});
+
+			mockQuery.mockImplementation(async function* () {
+				yield {
+					type: "assistant",
+					message: { content: [{ type: "text", text: "ok" }] },
+					parent_tool_use_id: null,
+					session_id: "test",
+				} as any;
+			});
+
+			await runnerWithoutAskCallback.start("hello");
+
+			const call = mockQuery.mock.calls[0][0];
+			const passed: string[] = call.options.allowedTools;
+			expect(passed).toEqual(["mcp__linear", "Read(./.claude/**)"]);
+			expect(passed).not.toContain("Bash");
+			expect(passed).not.toContain("Edit(**)");
+		});
+
+		it("never widens allowedTools to include an INTERCEPTED_TOOLS name", async () => {
+			// This is the regression this fix exists to prevent: subagents do
+			// NOT inherit `canUseTool`, so if a name in INTERCEPTED_TOOLS
+			// (e.g. AskUserQuestion) ever leaked into the widened
+			// allowedTools list, a subagent's AskUserQuestion call would hit
+			// the SDK's default-allow instead of being intercepted — quietly
+			// bypassing the one-question-at-a-time guard and the Linear
+			// question-answering flow, with no other test catching it.
+			//
+			// Guard against `INTERCEPTED_TOOLS` becoming empty (which would
+			// make this assertion vacuously true).
+			expect(INTERCEPTED_TOOLS.length).toBeGreaterThan(0);
+
+			const runnerWithAskCallback = new ClaudeRunner({
+				...defaultConfig,
+				allowedTools: ["mcp__linear"],
+				onAskUserQuestion: vi.fn(),
+			});
+
+			mockQuery.mockImplementation(async function* () {
+				yield {
+					type: "assistant",
+					message: { content: [{ type: "text", text: "ok" }] },
+					parent_tool_use_id: null,
+					session_id: "test",
+				} as any;
+			});
+
+			await runnerWithAskCallback.start("hello");
+
+			const call = mockQuery.mock.calls[0][0];
+			const passed: string[] = call.options.allowedTools;
+			for (const interceptedTool of INTERCEPTED_TOOLS) {
+				expect(passed).not.toContain(interceptedTool);
+			}
 		});
 	});
 });

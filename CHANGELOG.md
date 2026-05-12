@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- **Subagents dispatched via the Agent tool can now actually use their tools.** Worker subagents launched from a Cyrus session previously had every built-in tool call (Bash, Edit, Read, Write, Skill, etc.) silently denied, breaking subagent parallelism. Repository-level tool restrictions still apply as before.
 
 ## [0.2.67] - 2026-07-25
 
