@@ -336,6 +336,23 @@ export const RepositoryConfigSchema = z.object({
 	 * for fleet-wide tuning (concurrency, jitter, TTL, hold label).
 	 */
 	autoResumeOnStartup: z.boolean().optional(),
+
+	/**
+	 * Auto-compact trigger threshold as a percentage of the model context
+	 * window. When the session's recorded context exceeds this fraction,
+	 * the Claude runner's built-in auto-compaction fires mid-turn (via the
+	 * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var) so sessions stay inside
+	 * the window with margin to spare for the next turn.
+	 *
+	 * Per-repo override of `EdgeConfig.autoCompactThresholdPercent`. Range
+	 * 1–99. Falls back to the global value when omitted; when BOTH are
+	 * omitted no override is injected and the SDK's built-in default
+	 * (~93.5%) applies. The number is harness-agnostic: each runner
+	 * translates it to its own SDK knob (Claude →
+	 * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; Codex/Gemini/Cursor will pick up
+	 * an equivalent as their SDKs expose one).
+	 */
+	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
 });
 
 /**
@@ -473,6 +490,21 @@ export const EdgeConfigSchema = z.object({
 	 * when at least one repository opts in via `autoResumeOnStartup: true`.
 	 */
 	autoResume: AutoResumeConfigSchema.optional(),
+
+	/**
+	 * Auto-compact trigger threshold as a percentage of the model context
+	 * window (1–99). When a session's recorded context exceeds this fraction,
+	 * the Claude runner's built-in auto-compaction fires mid-turn (via the
+	 * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var).
+	 *
+	 * Global default; per-repo `RepositoryConfig.autoCompactThresholdPercent`
+	 * overrides this. When BOTH are omitted, no override is injected and
+	 * the SDK's built-in default (~93.5%) applies, preserving existing
+	 * install behavior. Operators on heavy-tool workloads should set 50–75%
+	 * — see CHANGELOG entry for the background on why the SDK default left
+	 * too thin a margin on long-running sessions.
+	 */
+	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
 });
 
 /**

@@ -117,6 +117,18 @@ export interface IssueRunnerConfigInput {
 	sandboxSettings?: SandboxSettings;
 	/** CA cert path for MITM TLS termination — passed via child process env */
 	egressCaCertPath?: string;
+	/**
+	 * Resolved auto-compact trigger threshold as a percentage of the model
+	 * context window (1–99). When set, threaded into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+	 * on the Claude session subprocess so the SDK's built-in auto-compaction
+	 * fires earlier than its ~93.5% default (which left too thin a margin for
+	 * tool-heavy turns — see CHANGELOG entry on ENG-555).
+	 *
+	 * Resolution is the caller's responsibility (typically `repo.autoCompactThresholdPercent
+	 * ?? edgeConfig.autoCompactThresholdPercent`). When undefined, no override
+	 * is injected and the session-env fallback (50) applies.
+	 */
+	autoCompactThresholdPercent?: number;
 }
 
 /**
@@ -483,6 +495,21 @@ export class RunnerConfigBuilder {
 				AWS_CA_BUNDLE: input.egressCaCertPath,
 				// Deno
 				DENO_CERT: input.egressCaCertPath,
+			};
+		}
+
+		// Thread the resolved Cyrus auto-compact threshold into the
+		// Claude subprocess. The Claude Code binary reads this env var
+		// as a float 0-100 and lowers the compaction trigger from its
+		// default ~93.5% to the requested percentage. Coexists with the
+		// session-env fallback of 50 — when this value is set, it takes
+		// precedence in the env spread chain via `additionalEnv`.
+		if (input.autoCompactThresholdPercent !== undefined) {
+			result.additionalEnv = {
+				...((result.additionalEnv as Record<string, string>) ?? {}),
+				CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
+					input.autoCompactThresholdPercent,
+				),
 			};
 		}
 

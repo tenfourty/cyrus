@@ -6503,6 +6503,9 @@ ${input.userComment}
 			],
 			sandboxSettings: this.sdkSandboxSettings ?? undefined,
 			egressCaCertPath: this.egressCaCertPath ?? undefined,
+			autoCompactThresholdPercent:
+				repository.autoCompactThresholdPercent ??
+				this.config.autoCompactThresholdPercent,
 			onMessage: (message: SDKMessage) => {
 				this.handleClaudeMessage(sessionId, message, repository.id);
 			},
