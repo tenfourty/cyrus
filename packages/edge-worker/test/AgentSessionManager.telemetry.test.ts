@@ -113,17 +113,9 @@ describe("AgentSessionManager telemetry wiring", () => {
 		const body = (responseCall as any)[1].body as string;
 		expect(body).toContain("the response body");
 		expect(body).toMatch(/— \$0\.0421 ·/);
-
-		// Running totals accumulated
-		const session = h.manager.getSession("s1");
-		expect(session?.metadata?.telemetryTotals?.totalCostUsd).toBeCloseTo(
-			0.0421,
-			4,
-		);
-		expect(session?.metadata?.telemetryTotals?.turnCount).toBe(1);
 	});
 
-	it("when telemetry disabled (no resolver): no NDJSON, no footer, no totals", async () => {
+	it("when telemetry disabled (no resolver): no NDJSON, no footer", async () => {
 		const h = makeHarness({});
 		dirs.push(h.dir);
 		await h.manager.completeSession("s1", claudeResult);
@@ -163,17 +155,29 @@ describe("AgentSessionManager telemetry wiring", () => {
 		expect(() => readFileSync(join("/should-not-be-used", "s1.jsonl"))).toThrow();
 	});
 
-	it("emits session_telemetry_ready event after totals are written", async () => {
+	it("posts NO trailing thought/action after the result activity (Linear UI state)", async () => {
+		// Critical invariant: Linear's session state is inferred from the LAST
+		// activity's content.type. A `response` flips state to `complete`;
+		// any subsequent `thought`/`action`/`elicitation` demotes back to
+		// `active` (pinning the UI as "still working"). The telemetry feature
+		// must NOT post anything after the result entry.
 		const h = makeHarness({
-			resolver: () => ({ enabled: true, linearFooter: false, ndjsonDir: undefined }),
+			resolver: () => ({
+				enabled: true,
+				linearFooter: true,
+				ndjsonDir: undefined,
+			}),
 		});
 		dirs.push(h.dir);
-		const events: Array<{ sessionId: string }> = [];
-		h.manager.on("session_telemetry_ready", (e) => events.push(e));
 		await h.manager.completeSession("s1", claudeResult);
-		expect(events).toHaveLength(1);
-		expect(events[0].sessionId).toBe("s1");
-		// And totals are present when the event fires
-		expect(h.manager.getSession("s1")?.metadata?.telemetryTotals).toBeDefined();
+
+		const types = h.spy.mock.calls.map((c: any[]) => c[1]?.type);
+		const lastResponseIdx = types.lastIndexOf("response");
+		const errorIdx = types.lastIndexOf("error");
+		const finalActivityIdx = Math.max(lastResponseIdx, errorIdx);
+		expect(finalActivityIdx).toBeGreaterThan(-1);
+		// No thought/action/elicitation posted after the final response
+		const trailingActivityTypes = types.slice(finalActivityIdx + 1);
+		expect(trailingActivityTypes).toEqual([]);
 	});
 });

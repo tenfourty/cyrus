@@ -4,8 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- New opt-in AI usage telemetry: turn it on to track per-turn and per-session usage, with an optional short summary appended to Cyrus's replies, and forward it to your own observability collector if you have one. Off by default, and can be enabled globally or for individual repositories.
+
 ### Fixed
-- Top-level config settings (such as the auto-compact threshold, auto-resume, and Cursor model defaults) are now reliably passed through to the running agent instead of silently being ignored on self-hosted installs.
+- Top-level config settings (such as the auto-compact threshold, auto-resume, Cursor model defaults, and telemetry) are now reliably passed through to the running agent instead of silently being ignored on self-hosted installs.
 
 ## [0.2.67] - 2026-07-25
 

@@ -475,6 +475,44 @@
 							}
 						},
 						"additionalProperties": false
+					},
+					"telemetry": {
+						"type": "object",
+						"properties": {
+							"enabled": {
+								"type": "boolean"
+							},
+							"linearFooter": {
+								"type": "boolean"
+							},
+							"ndjsonDir": {
+								"type": "string"
+							},
+							"otlp": {
+								"type": "object",
+								"properties": {
+									"endpoint": {
+										"type": "string"
+									},
+									"protocol": {
+										"type": "string",
+										"enum": ["grpc", "http/protobuf"]
+									},
+									"headers": {
+										"type": "object",
+										"propertyNames": {
+											"type": "string"
+										},
+										"additionalProperties": {
+											"type": "string"
+										}
+									}
+								},
+								"required": ["endpoint"],
+								"additionalProperties": false
+							}
+						},
+						"additionalProperties": false
 					}
 				},
 				"required": ["id", "name", "repositoryPath", "baseBranch"],
@@ -956,6 +994,44 @@
 				}
 			},
 			"required": ["httpProxyPort", "socksProxyPort"],
+			"additionalProperties": false
+		},
+		"telemetry": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"linearFooter": {
+					"type": "boolean"
+				},
+				"ndjsonDir": {
+					"type": "string"
+				},
+				"otlp": {
+					"type": "object",
+					"properties": {
+						"endpoint": {
+							"type": "string"
+						},
+						"protocol": {
+							"type": "string",
+							"enum": ["grpc", "http/protobuf"]
+						},
+						"headers": {
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {
+								"type": "string"
+							}
+						}
+					},
+					"required": ["endpoint"],
+					"additionalProperties": false
+				}
+			},
 			"additionalProperties": false
 		}
 	},

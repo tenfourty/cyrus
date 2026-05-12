@@ -260,6 +260,8 @@ export class ConfigManager extends EventEmitter {
 					parsedConfig.prReviewTrigger ?? this.config.prReviewTrigger,
 				// Sandbox / egress proxy config
 				sandbox: parsedConfig.sandbox ?? this.config.sandbox,
+				// Per-turn telemetry config (global; per-repo override lives on RepositoryConfig)
+				telemetry: parsedConfig.telemetry ?? this.config.telemetry,
 			};
 
 			// Basic validation
@@ -360,6 +362,7 @@ export class ConfigManager extends EventEmitter {
 			"linearWorkspaces",
 			"userAccessControl",
 			"sandbox",
+			"telemetry",
 		];
 
 		for (const key of globalKeys) {

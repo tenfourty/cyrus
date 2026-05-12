@@ -83,18 +83,6 @@ export type RunnerTelemetryRecord =
 	| CodexTelemetry
 	| CursorTelemetry;
 
-export interface SessionTelemetryTotals {
-	totalCostUsd: number;
-	totalInputTokens: number;
-	totalOutputTokens: number;
-	totalCacheReadTokens: number;
-	totalCacheCreationTokens: number;
-	totalDurationMs: number;
-	totalToolCalls: number;
-	turnCount: number;
-	permissionDenialsCount: number;
-}
-
 function compactNumber(n: number): string {
 	if (n < 1000) return String(n);
 	if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
@@ -131,53 +119,3 @@ export function formatTelemetryFooter(r: RunnerTelemetryRecord): string {
 	return `\n\n— ${parts.join(" · ")}`;
 }
 
-export function formatTelemetryRollup(t: SessionTelemetryTotals): string {
-	const parts: string[] = [];
-	if (t.totalCostUsd > 0) parts.push(formatCost(t.totalCostUsd));
-	parts.push(
-		`${compactNumber(t.totalInputTokens)} in / ${compactNumber(t.totalOutputTokens)} out`,
-	);
-	const cache = t.totalCacheReadTokens + t.totalCacheCreationTokens;
-	if (cache > 0) parts.push(`${compactNumber(cache)} cache`);
-	parts.push(formatDuration(t.totalDurationMs));
-	parts.push(`${t.turnCount} turns`);
-	parts.push(`${t.totalToolCalls} tools`);
-	parts.push(`${t.permissionDenialsCount} denials`);
-	return `**Session totals** — ${parts.join(" · ")}`;
-}
-
-export function emptyTotals(): SessionTelemetryTotals {
-	return {
-		totalCostUsd: 0,
-		totalInputTokens: 0,
-		totalOutputTokens: 0,
-		totalCacheReadTokens: 0,
-		totalCacheCreationTokens: 0,
-		totalDurationMs: 0,
-		totalToolCalls: 0,
-		turnCount: 0,
-		permissionDenialsCount: 0,
-	};
-}
-
-export function accumulateTotals(
-	prev: SessionTelemetryTotals,
-	r: RunnerTelemetryRecord,
-): SessionTelemetryTotals {
-	const denials =
-		r.runner === "claude" ? r.providerExtras.permissionDenials.length : 0;
-	return {
-		totalCostUsd: prev.totalCostUsd + (r.costUsd ?? 0),
-		totalInputTokens: prev.totalInputTokens + r.usage.input_tokens,
-		totalOutputTokens: prev.totalOutputTokens + r.usage.output_tokens,
-		totalCacheReadTokens:
-			prev.totalCacheReadTokens + (r.usage.cache_read_input_tokens ?? 0),
-		totalCacheCreationTokens:
-			prev.totalCacheCreationTokens +
-			(r.usage.cache_creation_input_tokens ?? 0),
-		totalDurationMs: prev.totalDurationMs + r.durationMs,
-		totalToolCalls: prev.totalToolCalls + r.toolCalls.total,
-		turnCount: prev.turnCount + 1,
-		permissionDenialsCount: prev.permissionDenialsCount + denials,
-	};
-}
