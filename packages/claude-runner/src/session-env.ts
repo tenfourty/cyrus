@@ -74,27 +74,9 @@ export function buildBaseSessionEnv(
 		}
 	}
 
-	// Auto-compact trigger threshold. Claude Code's default reserves only
-	// ~13k tokens of headroom before compacting (≈ 93.5% of a 200k window),
-	// which is too tight for tool-heavy turns — AIN-555 wedged at 96% of a
-	// 1M-token window after two auto-compactions still couldn't keep pace
-	// with growth, then every resume rehydrated the over-budget transcript
-	// and the session was permanently stuck on "Prompt is too long". Lower
-	// the trigger to 50% by default so compaction fires earlier and keeps
-	// sessions inside the window with margin to spare.
-	//
-	// Precedence (later in the spread wins): parent env (forwarded above) →
-	// CYRUS_SESSION_ENV → autoCompactDefault (only injected when parent did
-	// not set it) → extra (repo `.env` final override).
-	const autoCompactDefault: Record<string, string> =
-		process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE === undefined
-			? { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "50" }
-			: {};
-
 	return {
 		...env,
 		...CYRUS_SESSION_ENV,
-		...autoCompactDefault,
 		...extra,
 	};
 }
