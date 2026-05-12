@@ -81,6 +81,18 @@ export class LinearIssueTrackerService implements IIssueTrackerService {
 	private refreshPromise: Promise<string> | null = null;
 
 	/**
+	 * Per-session "turn closed" flag. Set when a `response` or `error`
+	 * activity is posted; cleared by `notifyTurnStarted` (called from
+	 * EdgeWorker on prompted-webhook arrival). Used to warn (and later
+	 * block) post-response thought/action/elicitation emissions that
+	 * would demote Linear's session state from `complete` back to
+	 * `active`, pinning the UI as "still working".
+	 *
+	 * See: https://linear.app/developers/agent-interaction (Session states)
+	 */
+	private turnClosedSessions: Set<string> = new Set();
+
+	/**
 	 * Static map for workspace-level coalescing of concurrent token refreshes.
 	 * Multiple instances sharing the same workspace will share a single refresh HTTP call.
 	 */
@@ -813,11 +825,51 @@ export class LinearIssueTrackerService implements IIssueTrackerService {
 	/**
 	 * Post an agent activity to an agent session.
 	 * Signature matches Linear SDK's createAgentActivity exactly.
+	 *
+	 * Emits a warning (but still posts — warn-only mode) when a
+	 * `thought` / `action` / `elicitation` is posted to a session that
+	 * already has a closing `response` or `error` activity, since this
+	 * pins Linear's UI as "still working" by demoting the inferred
+	 * session state back to `active`. Reset on next prompted-webhook
+	 * arrival via `notifyTurnStarted`.
 	 */
 	async createAgentActivity(
 		input: AgentActivityCreateInput,
 	): Promise<AgentActivityPayload> {
-		return await this.linearClient.createAgentActivity(input);
+		const sessionId = input.agentSessionId;
+		const contentType = (input as { content?: { type?: string } }).content
+			?.type;
+		const isClosing = contentType === "response" || contentType === "error";
+		const isOpening =
+			contentType === "thought" ||
+			contentType === "action" ||
+			contentType === "elicitation";
+
+		if (sessionId && isOpening && this.turnClosedSessions.has(sessionId)) {
+			this.logger.warn(
+				`Posting '${contentType}' activity to session ${sessionId} after a closing response/error has already landed. ` +
+					"Linear will demote session state from 'complete' back to 'active', pinning the UI as 'still working'. " +
+					`Stack: ${new Error("trace").stack?.split("\n").slice(1, 6).join(" | ") ?? "<no stack>"}`,
+			);
+		}
+
+		const result = await this.linearClient.createAgentActivity(input);
+
+		if (sessionId && isClosing) {
+			this.turnClosedSessions.add(sessionId);
+		}
+
+		return result;
+	}
+
+	/**
+	 * Reset the per-session "turn closed" guard. Called by EdgeWorker when
+	 * a new prompted webhook arrives for the session, signaling the start
+	 * of a new turn. After this call, the next `response` or `error`
+	 * activity is allowed to be the closing activity for the new turn.
+	 */
+	notifyTurnStarted(sessionId: string): void {
+		this.turnClosedSessions.delete(sessionId);
 	}
 
 	// ========================================================================

@@ -11,13 +11,11 @@ import type {
 	SDKUserMessage,
 } from "cyrus-claude-runner";
 import {
-	accumulateTotals,
 	AgentSessionStatus,
 	AgentSessionType,
 	type CyrusAgentSession,
 	type CyrusAgentSessionEntry,
 	createLogger,
-	emptyTotals,
 	formatTelemetryFooter,
 	type IAgentRunner,
 	type ILogger,
@@ -78,16 +76,6 @@ export type AgentSessionManagerEvents = {
 	 * already-completed sessions on the next restart.
 	 */
 	session_terminal: (event: { sessionId: string }) => void;
-
-	/**
-	 * Emitted at the end of `addResultEntry` once per-turn telemetry has
-	 * been written to the session entry + running totals updated. The
-	 * EdgeWorker listens to this (NOT session_terminal) to post the
-	 * session rollup, because telemetry totals are not available until
-	 * after the result entry's metadata is filled in. session_terminal
-	 * fires earlier (at status-transition time) for drain tracking.
-	 */
-	session_telemetry_ready: (event: { sessionId: string }) => void;
 };
 
 /**
@@ -963,8 +951,16 @@ export class AgentSessionManager extends EventEmitter {
 		).trim();
 
 		// Resolve telemetry config (per-repo override merged over global) and
-		// build the per-turn record if enabled. Footer + NDJSON + running
-		// totals are all gated on telemetryConfig.enabled.
+		// build the per-turn record if enabled. Footer is inlined into the
+		// result-entry body so Linear's UI sees `response` as the LAST
+		// activity (which is what flips session state to `complete`). The
+		// per-turn record is also persisted to NDJSON for offline mining.
+		//
+		// No trailing rollup activity is posted. Linear's session-state
+		// inference is "last activity's content.type wins" — posting any
+		// thought/action after a response demotes state back to `active`
+		// (pinning the UI as still-working). See:
+		// https://linear.app/developers/agent-interaction (Session states).
 		const repoId = session?.repositories[0]?.repositoryId ?? "unknown";
 		const telemetryConfig = this.telemetryResolver?.(repoId);
 		let runnerTelemetry: RunnerTelemetryRecord | undefined;
@@ -987,14 +983,6 @@ export class AgentSessionManager extends EventEmitter {
 				await this.getTelemetryWriter(telemetryConfig.ndjsonDir).appendTurn(
 					runnerTelemetry,
 				);
-			}
-			if (session) {
-				const prev = session.metadata?.telemetryTotals ?? emptyTotals();
-				session.metadata = {
-					...session.metadata,
-					telemetryTotals: accumulateTotals(prev, runnerTelemetry),
-				};
-				this.sessions.set(sessionId, session);
 			}
 		}
 
@@ -1020,14 +1008,6 @@ export class AgentSessionManager extends EventEmitter {
 		// DON'T store locally - syncEntryToActivitySink will do it
 		// Sync to Linear
 		await this.syncEntryToActivitySink(resultEntry, sessionId);
-
-		// Telemetry totals are now written + activity synced. Emit a distinct
-		// event (NOT session_terminal — telemetry totals would not exist
-		// until after this method runs). EdgeWorker subscribes to post the
-		// rollup thought.
-		if (runnerTelemetry) {
-			this.emit("session_telemetry_ready", { sessionId });
-		}
 	}
 
 	/**
@@ -2049,18 +2029,6 @@ export class AgentSessionManager extends EventEmitter {
 			sessionId,
 			{ content: { type: "thought", body: `Using model: ${model}` } },
 			"model notification",
-		);
-	}
-
-	/**
-	 * Public wrapper for posting a thought activity. Used by EdgeWorker's
-	 * `session_telemetry_ready` listener to post the session-totals rollup.
-	 */
-	async postThoughtActivity(sessionId: string, body: string): Promise<void> {
-		await this.postActivity(
-			sessionId,
-			{ content: { type: "thought", body } },
-			"telemetry rollup",
 		);
 	}
 

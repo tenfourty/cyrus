@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-	accumulateTotals,
-	emptyTotals,
 	formatTelemetryFooter,
-	formatTelemetryRollup,
 	type RunnerTelemetryRecord,
-	type SessionTelemetryTotals,
 } from "./RunnerTelemetry.js";
 
 const claudeRecord: RunnerTelemetryRecord = {
@@ -91,61 +87,20 @@ describe("formatTelemetryFooter", () => {
 	});
 });
 
-describe("formatTelemetryRollup", () => {
-	const totals: SessionTelemetryTotals = {
-		totalCostUsd: 0.4821,
-		totalInputTokens: 145200,
-		totalOutputTokens: 8400,
-		totalCacheReadTokens: 92100,
-		totalCacheCreationTokens: 5000,
-		totalDurationMs: 252000,
-		totalToolCalls: 47,
-		turnCount: 8,
-		permissionDenialsCount: 0,
-	};
-
-	it("renders full rollup with cost", () => {
-		expect(formatTelemetryRollup(totals)).toBe(
-			"**Session totals** — $0.4821 · 145.2k in / 8.4k out · 97.1k cache · 4m 12s · 8 turns · 47 tools · 0 denials",
-		);
-	});
-
-	it("omits cost segment when totalCostUsd is 0", () => {
-		expect(formatTelemetryRollup({ ...totals, totalCostUsd: 0 })).toBe(
-			"**Session totals** — 145.2k in / 8.4k out · 97.1k cache · 4m 12s · 8 turns · 47 tools · 0 denials",
-		);
-	});
-
-	it("formats sub-minute durations as seconds", () => {
-		expect(formatTelemetryRollup({ ...totals, totalDurationMs: 42000 })).toContain(
-			"· 42.0s ·",
-		);
-	});
-
-	it("uses M suffix for totals at or above 1M tokens (1M-window Claude sessions)", () => {
-		const big: SessionTelemetryTotals = {
-			...totals,
-			totalInputTokens: 22,
-			totalCacheReadTokens: 2_276_000,
-			totalCacheCreationTokens: 164_400,
+describe("formatTelemetryFooter — M suffix at >= 1M tokens", () => {
+	it("renders M-suffix for high-cache totals (1M-window Claude sessions)", () => {
+		const heavyCache: RunnerTelemetryRecord = {
+			...claudeRecord,
+			usage: {
+				input_tokens: 22,
+				output_tokens: 9700,
+				cache_read_input_tokens: 2_276_000,
+				cache_creation_input_tokens: 164_400,
+			},
+			toolCalls: { total: 16, byName: { Bash: 14, Edit: 2 } },
 		};
-		const out = formatTelemetryRollup(big);
-		expect(out).toContain("22 in /");
+		const out = formatTelemetryFooter(heavyCache);
+		expect(out).toContain("22 in / 9.7k out");
 		expect(out).toContain("2.4M cache");
-	});
-});
-
-describe("accumulateTotals", () => {
-	it("sums per-turn fields into running totals", () => {
-		const t1 = accumulateTotals(emptyTotals(), claudeRecord);
-		const t2 = accumulateTotals(t1, codexRecord);
-		expect(t2.totalCostUsd).toBeCloseTo(0.0421, 4);
-		expect(t2.totalInputTokens).toBe(16340);
-		expect(t2.totalOutputTokens).toBe(1705);
-		expect(t2.totalCacheReadTokens).toBe(9400);
-		expect(t2.totalCacheCreationTokens).toBe(320);
-		expect(t2.totalToolCalls).toBe(9);
-		expect(t2.turnCount).toBe(2);
-		expect(t2.permissionDenialsCount).toBe(0);
 	});
 });
