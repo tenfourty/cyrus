@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Subagents dispatched via the Agent tool can now actually use Bash, Edit, Read, Write, Glob, and Skill.** When a Cyrus session's main agent dispatched a worker subagent via the Agent tool (in-process sidechain, optionally with `isolation: "worktree"` and a per-task model), every built-in tool call from the subagent returned the SDK's "Permission to use X has been denied" auto-response, silently breaking subagent parallelism. Root cause: Cyrus's `canUseTool` callback (which blanket-allows every tool except `AskUserQuestion`) is bound to the top-level conversation and does not propagate to subagent conversations — subagents inherit the parent's narrow `allowedTools` only, hit the SDK's default-deny for anything not on the list, and the parent perceives a silently "BLOCKED" subagent. The parent's effective `allowedTools` is now widened to match what `canUseTool` actually permits (all built-in Cyrus tools) so subagents inheriting the list have a usable tool surface. `disallowedTools` (home-directory deny, repo-level denies) still takes precedence — the safety envelope is unchanged.
+
 ### Changed
 - **Slack mention prompt nudges agents toward `linear_agent_give_feedback` for live child sessions** — When responding in Slack, Cyrus is now told to send mid-flight corrections to a running child agent session via `mcp__cyrus-tools__linear_agent_give_feedback` instead of falling back to `mcp__linear__save_comment`. Produces a stronger signal when correcting work that is already in progress. ([CYPACK-1189](https://linear.app/ceedar/issue/CYPACK-1189), [#1198](https://github.com/cyrusagents/cyrus/pull/1198))
 
