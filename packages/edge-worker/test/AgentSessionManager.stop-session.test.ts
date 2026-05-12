@@ -183,6 +183,49 @@ describe("AgentSessionManager stop-session behavior", () => {
 		});
 	});
 
+	it("marks session as Error when result is_error is true even if subtype is 'success'", async () => {
+		// Reproduces ENG-555: the SDK encodes some hard failures (notably
+		// "Prompt is too long" on a too-large resume) as a result message
+		// with subtype: "success" AND is_error: true, with the error text
+		// in `result`. Cyrus used to gate the status flip on subtype only,
+		// so the session was mis-flipped to Complete despite is_error
+		// being true — diverging from the error type activity that
+		// addResultEntry correctly posts to Linear.
+		await manager.completeSession(sessionId, {
+			type: "result",
+			subtype: "success",
+			duration_ms: 1,
+			duration_api_ms: 1,
+			is_error: true,
+			num_turns: 1,
+			result: "Prompt is too long",
+			stop_reason: null,
+			total_cost_usd: 0,
+			usage: {
+				input_tokens: 1,
+				output_tokens: 1,
+				cache_creation_input_tokens: 0,
+				cache_read_input_tokens: 0,
+				cache_creation: null,
+			},
+			modelUsage: {},
+			permission_denials: [],
+			uuid: "result-prompt-too-long",
+			session_id: "sdk-session",
+		} as any);
+
+		expect(manager.getSession(sessionId)?.status).toBe(
+			AgentSessionStatus.Error,
+		);
+		// And the user-visible Linear activity must be an error, with the
+		// SDK's `result` text as the body (not the assistant buffer).
+		const errorActivity = postActivitySpy.mock.calls.find(
+			(call: any[]) => call[1]?.type === "error",
+		);
+		expect(errorActivity).toBeDefined();
+		expect(errorActivity![1].body).toBe("Prompt is too long");
+	});
+
 	it("posts actual error message to Linear for usage limit errors (not generic)", async () => {
 		const usageLimitError =
 			"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Feb 16th, 2026 8:09 PM.";
