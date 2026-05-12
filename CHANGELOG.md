@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Fixed an issue where certain hard session failures (such as a resume attempt exceeding the model's context length) were sometimes logged and tracked internally as successfully completed instead of failed, even though the correct error was still shown in the Linear timeline.
 
 ## [0.2.67] - 2026-07-25
 
