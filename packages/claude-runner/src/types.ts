@@ -52,6 +52,16 @@ export interface ClaudeRunnerConfig {
 	sandbox?: SandboxSettings; // Sandbox settings (enabled, network proxy ports, etc.)
 	/** Additional environment variables to pass to the Claude child process (merged after process.env) */
 	additionalEnv?: Record<string, string>;
+	/**
+	 * Tier-1 OTLP passthrough — when set, injects CLAUDE_CODE_ENABLE_TELEMETRY
+	 * plus standard OTEL_* env vars into the subprocess so the SDK's native
+	 * OTel export ships directly to the operator's collector.
+	 */
+	otlp?: {
+		endpoint: string;
+		protocol?: "grpc" | "http/protobuf";
+		headers?: Record<string, string>;
+	};
 	pathToClaudeCodeExecutable?: string; // Explicit path to Claude Code CLI executable (auto-resolved if not set)
 	extraArgs?: Record<string, string | null>; // Additional CLI arguments to pass to Claude Code (e.g., { chrome: null } for --chrome flag)
 	/**

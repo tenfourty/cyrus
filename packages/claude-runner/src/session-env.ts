@@ -54,8 +54,25 @@ export const CYRUS_SESSION_ENV = {
  * on top. Callers can spread additional vars on top (e.g., repository .env
  * for live runs).
  */
+export interface BaseSessionEnvOptions {
+	/**
+	 * Tier-1 OTLP passthrough. When `endpoint` is set, the Claude Agent SDK
+	 * subprocess gets CLAUDE_CODE_ENABLE_TELEMETRY=1 plus standard OTEL_*
+	 * env vars so it can export traces, metrics, and logs directly to the
+	 * operator's collector without any Cyrus-side OTel SDK setup.
+	 *
+	 * See: https://code.claude.com/docs/en/agent-sdk/observability
+	 */
+	otlp?: {
+		endpoint: string;
+		protocol?: "grpc" | "http/protobuf";
+		headers?: Record<string, string>;
+	};
+}
+
 export function buildBaseSessionEnv(
 	extra?: Record<string, string>,
+	options: BaseSessionEnvOptions = {},
 ): Record<string, string> {
 	const env: Record<string, string> = {
 		...(process.env as Record<string, string>),
@@ -74,9 +91,27 @@ export function buildBaseSessionEnv(
 		}
 	}
 
+	const otelEnv: Record<string, string> = {};
+	if (options.otlp) {
+		otelEnv.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+		otelEnv.OTEL_EXPORTER_OTLP_ENDPOINT = options.otlp.endpoint;
+		otelEnv.OTEL_EXPORTER_OTLP_PROTOCOL = options.otlp.protocol ?? "grpc";
+		otelEnv.OTEL_METRICS_EXPORTER = "otlp";
+		otelEnv.OTEL_LOGS_EXPORTER = "otlp";
+		// Default: do NOT capture prompt/completion content. Operators must
+		// opt in explicitly if they want body capture (PII risk).
+		otelEnv.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false";
+		if (options.otlp.headers) {
+			otelEnv.OTEL_EXPORTER_OTLP_HEADERS = Object.entries(options.otlp.headers)
+				.map(([k, v]) => `${k}=${v}`)
+				.join(",");
+		}
+	}
+
 	return {
 		...env,
 		...CYRUS_SESSION_ENV,
+		...otelEnv,
 		...extra,
 	};
 }
