@@ -311,6 +311,23 @@ export const RepositoryConfigSchema = z.object({
 
 	// Repository-specific user access control
 	userAccessControl: UserAccessControlConfigSchema.optional(),
+
+	/**
+	 * Auto-compact trigger threshold as a percentage of the model context
+	 * window. When the session's recorded context exceeds this fraction,
+	 * (a) the Claude runner's built-in auto-compaction fires mid-turn (via
+	 * the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var), and (b) Cyrus runs a
+	 * defensive `/compact` at every new-turn entry if the at-rest context
+	 * is already over threshold.
+	 *
+	 * Per-repo override of `EdgeConfig.autoCompactThresholdPercent`. Range
+	 * 1–99. Falls back to the global value when omitted, and to a built-in
+	 * default of 50 when both are omitted. The number is harness-agnostic:
+	 * each runner translates it to its own SDK knob (Claude →
+	 * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; Codex/Gemini/Cursor will pick up
+	 * an equivalent as their SDKs expose one).
+	 */
+	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
 });
 
 /**
@@ -409,6 +426,21 @@ export const EdgeConfigSchema = z.object({
 	 * all agent network traffic through it for inspection and filtering.
 	 */
 	sandbox: SandboxConfigSchema.optional(),
+
+	/**
+	 * Auto-compact trigger threshold as a percentage of the model context
+	 * window (1–99). When a session's recorded context exceeds this fraction,
+	 * (a) the Claude runner's built-in auto-compaction fires mid-turn (via
+	 * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`), and (b) Cyrus runs a defensive
+	 * `/compact` at every new-turn entry if the at-rest context is already
+	 * over threshold (covers stopped/wedged sessions that never got to
+	 * auto-compact in-stream).
+	 *
+	 * Global default; per-repo `RepositoryConfig.autoCompactThresholdPercent`
+	 * overrides this. Built-in fallback is 50 (vs the SDK's ~93.5% default —
+	 * see CHANGELOG entry for context on why 50% is the survivable choice).
+	 */
+	autoCompactThresholdPercent: z.number().int().min(1).max(99).optional(),
 });
 
 /**

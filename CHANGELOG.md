@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Configurable auto-compact threshold (`autoCompactThresholdPercent`).** New optional config field on both `EdgeConfig` (global, `~/.cyrus/config.json`) and `RepositoryConfig` (per-repo override), range 1–99, expressing the percentage of the model context window at which compaction should fire. The Claude runner threads the resolved value into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` on the session subprocess so the SDK's built-in auto-compaction fires earlier than its ~93.5% default, leaving more margin for the next turn. Per-repo overrides global; both default to undefined, in which case Cyrus does not inject the env var and the SDK's built-in default applies (no behavior change for existing installs). Number is harness-agnostic — Codex/Gemini/Cursor will pick up an equivalent translation as their SDKs expose one. Background: long-running sessions on `claude-opus-4-7[1m]` were wedging at ~96% of a 1M-token window before the SDK could keep pace; setting `autoCompactThresholdPercent` to 50–75% gives those sessions room to breathe at the cost of more frequent compactions.
+
 ### Changed
 - **Slack mention prompt nudges agents toward `linear_agent_give_feedback` for live child sessions** — When responding in Slack, Cyrus is now told to send mid-flight corrections to a running child agent session via `mcp__cyrus-tools__linear_agent_give_feedback` instead of falling back to `mcp__linear__save_comment`. Produces a stronger signal when correcting work that is already in progress. ([CYPACK-1189](https://linear.app/ceedar/issue/CYPACK-1189), [#1198](https://github.com/cyrusagents/cyrus/pull/1198))
 
