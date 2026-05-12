@@ -1273,6 +1273,15 @@ export class CLIIssueTrackerService
 	}
 
 	/**
+	 * No-op for the CLI test adapter — turn-end semantics are Linear-specific.
+	 * The Linear tracker uses this to reset its post-response guard; the CLI
+	 * adapter has no equivalent state to clear.
+	 */
+	notifyTurnStarted(_sessionId: string): void {
+		// no-op
+	}
+
+	/**
 	 * List agent activities for a session.
 	 *
 	 * @param sessionId - The session ID to get activities for
