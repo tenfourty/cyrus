@@ -293,9 +293,30 @@ export class EdgeWorker extends EventEmitter {
 		}
 	>();
 
+	/**
+	 * Resolve `~/` prefixes in path-bearing config fields that are otherwise
+	 * passed verbatim to `fs.readFileSync` (which does not expand tildes).
+	 * Repository-scoped paths are normalized separately in addNew /
+	 * updateModified; this covers the platform-level MCP config lists that
+	 * cyrus-hosted writes with literal `~/.cyrus/...` prefixes when
+	 * generating self-host config.
+	 */
+	private static normalizeConfigPaths(
+		config: EdgeWorkerConfig,
+	): EdgeWorkerConfig {
+		const resolveList = (paths: string[] | undefined): string[] | undefined =>
+			paths ? paths.map(resolvePath) : undefined;
+		return {
+			...config,
+			slackMcpConfigs: resolveList(config.slackMcpConfigs),
+			linearMcpConfigs: resolveList(config.linearMcpConfigs),
+			githubMcpConfigs: resolveList(config.githubMcpConfigs),
+		};
+	}
+
 	constructor(config: EdgeWorkerConfig) {
 		super();
-		this.config = config;
+		this.config = EdgeWorker.normalizeConfigPaths(config);
 		this.cyrusHome = config.cyrusHome;
 		this.logger = createLogger({ component: "EdgeWorker" });
 		this.persistenceManager = new PersistenceManager(
@@ -622,7 +643,7 @@ export class EdgeWorker extends EventEmitter {
 				await this.addNewRepositories(changes.added);
 				// Live-update sandbox / egress proxy settings
 				await this.applySandboxConfigChanges(changes.newConfig);
-				this.config = changes.newConfig;
+				this.config = EdgeWorker.normalizeConfigPaths(changes.newConfig);
 				this.configManager.setConfig(changes.newConfig);
 				this.runnerSelectionService.setConfig(changes.newConfig);
 				this.toolPermissionResolver.setConfig(changes.newConfig);
