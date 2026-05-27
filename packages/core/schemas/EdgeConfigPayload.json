@@ -495,6 +495,9 @@
 					"linearRefreshToken": {
 						"type": "string"
 					},
+					"linearTokenExpiresAt": {
+						"type": "number"
+					},
 					"linearWorkspaceSlug": {
 						"type": "string"
 					},

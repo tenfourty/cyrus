@@ -36,13 +36,13 @@ function makeBuilder(): RunnerConfigBuilder {
 }
 
 describe("RunnerConfigBuilder.buildChatConfig", () => {
-	it("includes autoMemoryDirectory in allowedDirectories so the session can read existing memory files (CYPACK-1197)", () => {
+	it("includes autoMemoryDirectory in allowedDirectories so the session can read existing memory files (CYPACK-1197)", async () => {
 		const builder = makeBuilder();
 		const cyrusHome = "/tmp/cyrus-home-test";
 		const workspacePath = join(cyrusHome, "slack-workspaces", "thread-x");
 		const repositoryPaths = ["/repo/one", "/repo/two"];
 
-		const config = builder.buildChatConfig({
+		const config = await builder.buildChatConfig({
 			workspacePath,
 			workspaceName: "slack-thread-x",
 			systemPrompt: "test",
@@ -64,11 +64,11 @@ describe("RunnerConfigBuilder.buildChatConfig", () => {
 		]);
 	});
 
-	it("passes managed skill plugins and scoped skill names to chat runner configs", () => {
+	it("passes managed skill plugins and scoped skill names to chat runner configs", async () => {
 		const builder = makeBuilder();
 		const plugins = [{ type: "local" as const, path: "/cyrus/user-skills" }];
 
-		const config = builder.buildChatConfig({
+		const config = await builder.buildChatConfig({
 			workspacePath: "/tmp/slack-workspace",
 			workspaceName: "slack-thread-x",
 			systemPrompt: "test",

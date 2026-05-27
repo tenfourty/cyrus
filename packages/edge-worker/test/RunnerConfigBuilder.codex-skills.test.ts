@@ -35,7 +35,7 @@ function makeBuilder(): RunnerConfigBuilder {
 }
 
 describe("RunnerConfigBuilder Codex managed skills", () => {
-	it("passes scoped plugins and skill names to Codex runner configs", () => {
+	it("passes scoped plugins and skill names to Codex runner configs", async () => {
 		const session = {
 			issueId: "issue-1",
 			issue: { identifier: "ABC-1" },
@@ -52,7 +52,7 @@ describe("RunnerConfigBuilder Codex managed skills", () => {
 		} as unknown as RepositoryConfig;
 		const plugins = [{ type: "local" as const, path: "/cyrus/user-skills" }];
 
-		const { config, runnerType } = makeBuilder().buildIssueConfig({
+		const { config, runnerType } = await makeBuilder().buildIssueConfig({
 			session,
 			repository,
 			sessionId: "sess-1",

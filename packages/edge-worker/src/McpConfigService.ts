@@ -19,8 +19,16 @@ type CyrusToolsMcpContextEntry = {
  * Dependencies injected into McpConfigService from the EdgeWorker.
  */
 export interface McpConfigServiceDeps {
-	/** Retrieve the stored Linear API token for a workspace */
-	getLinearTokenForWorkspace: (workspaceId: string) => string | null;
+	/**
+	 * Retrieve a guaranteed-fresh Linear API token for a workspace, proactively
+	 * refreshing it if the stored access token has aged out. Returns null when
+	 * no token is available (e.g. CLI platform or unconfigured workspace).
+	 *
+	 * The Linear MCP server receives this token as a static bearer header and
+	 * cannot self-refresh, so freshness must be ensured here at build time
+	 * rather than relying on a reactive 401-driven refresh elsewhere.
+	 */
+	ensureFreshLinearToken: (workspaceId: string) => Promise<string | null>;
 	/** Retrieve the issue tracker service for a workspace (must expose getClient()) */
 	getIssueTracker: (
 		workspaceId: string,
@@ -64,15 +72,19 @@ export class McpConfigService {
 	 * @param linearWorkspaceId - Linear workspace ID (from webhook.organizationId or repo config)
 	 * @param parentSessionId - Parent session ID for cyrus-tools context
 	 */
-	buildMcpConfig(
+	async buildMcpConfig(
 		repoId: string,
 		linearWorkspaceId: string,
 		parentSessionId?: string,
-	): Record<string, McpServerConfig> {
+	): Promise<Record<string, McpServerConfig>> {
 		const contextId = this.buildContextId(repoId, parentSessionId);
 
 		// Prebuild one SDK server for this context so callback wiring remains deterministic.
-		const linearToken = this.deps.getLinearTokenForWorkspace(linearWorkspaceId);
+		// Source the token through the proactive-freshness path so a token that
+		// aged out since it was last persisted is refreshed before it is baked
+		// into the (non-self-refreshing) Linear MCP server header below.
+		const linearToken =
+			await this.deps.ensureFreshLinearToken(linearWorkspaceId);
 		const issueTracker = this.deps.getIssueTracker(linearWorkspaceId);
 		if (!linearToken || !issueTracker?.getClient) {
 			// CLI platform mode — no Linear client available, return config without cyrus-tools

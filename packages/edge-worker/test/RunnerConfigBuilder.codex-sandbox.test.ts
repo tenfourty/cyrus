@@ -42,8 +42,8 @@ function makeSession(): CyrusAgentSession {
 	} as unknown as CyrusAgentSession;
 }
 
-function buildCodexConfig(sandboxSettings?: Record<string, unknown>) {
-	const { config } = makeCodexBuilder().buildIssueConfig({
+async function buildCodexConfig(sandboxSettings?: Record<string, unknown>) {
+	const { config } = await makeCodexBuilder().buildIssueConfig({
 		session: makeSession(),
 		repository: {
 			id: "repo-a",
@@ -70,17 +70,18 @@ function buildCodexConfig(sandboxSettings?: Record<string, unknown>) {
 }
 
 describe("RunnerConfigBuilder Codex sandbox plumbing", () => {
-	it("translates the egress sandbox into a Codex filesystem allow-list", () => {
+	it("translates the egress sandbox into a Codex filesystem allow-list", async () => {
 		// Plumbs both write (worktree) and read (worktree + allowed dirs) roots;
 		// the Codex runner turns these into a per-thread permission profile.
-		const config = buildCodexConfig({ enabled: true });
+		const config = await buildCodexConfig({ enabled: true });
 		expect(config.sandboxSettings).toEqual({
 			allowWrite: ["/ws/root"],
 			allowRead: ["/ws/root", "/ws/root", "/repos/repo-a"],
 		});
 	});
 
-	it("leaves Codex sandbox settings unset when the egress sandbox is disabled", () => {
-		expect(buildCodexConfig(undefined).sandboxSettings).toBeUndefined();
+	it("leaves Codex sandbox settings unset when the egress sandbox is disabled", async () => {
+		const config = await buildCodexConfig(undefined);
+		expect(config.sandboxSettings).toBeUndefined();
 	});
 });

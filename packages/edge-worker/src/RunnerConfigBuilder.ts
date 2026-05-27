@@ -32,7 +32,7 @@ export interface IMcpConfigProvider {
 		repoId: string,
 		linearWorkspaceId: string,
 		parentSessionId?: string,
-	): Record<string, McpServerConfig>;
+	): Promise<Record<string, McpServerConfig>>;
 	buildMergedMcpConfigPath(
 		repositories: RepositoryConfig | RepositoryConfig[],
 	): string | string[] | undefined;
@@ -213,7 +213,9 @@ export class RunnerConfigBuilder {
 	 * Chat sessions get read-only tools + MCP tool prefixes, and a simplified
 	 * config without hooks or model selection.
 	 */
-	buildChatConfig(input: ChatRunnerConfigInput): AgentRunnerConfig {
+	async buildChatConfig(
+		input: ChatRunnerConfigInput,
+	): Promise<AgentRunnerConfig> {
 		// MCP config paths for chat sessions come exclusively from the
 		// platform override list (e.g. `slackMcpConfigs`). Chat sessions
 		// are repo-agnostic at the session level — we do NOT fall back to
@@ -229,11 +231,12 @@ export class RunnerConfigBuilder {
 					: [...input.platformMcpConfigOverrides]
 				: undefined;
 
-		// Build fresh MCP config at session start (reads current token from config)
-		// This follows the same pattern as buildIssueConfig — never use a pre-baked config
+		// Build fresh MCP config at session start (proactively refreshes the
+		// Linear token if stale). This follows the same pattern as
+		// buildIssueConfig — never use a pre-baked config.
 		const mcpConfig =
 			input.linearWorkspaceId && input.repository
-				? this.mcpConfigProvider.buildMcpConfig(
+				? await this.mcpConfigProvider.buildMcpConfig(
 						input.repository.id,
 						input.linearWorkspaceId,
 						input.sessionId,
@@ -300,10 +303,10 @@ export class RunnerConfigBuilder {
 	 * Issue sessions get full tool sets, runner type selection, model overrides,
 	 * hooks, and runner-specific configuration (Chrome, Cursor, etc.).
 	 */
-	buildIssueConfig(input: IssueRunnerConfigInput): {
+	async buildIssueConfig(input: IssueRunnerConfigInput): Promise<{
 		config: AgentRunnerConfig;
 		runnerType: RunnerType;
-	} {
+	}> {
 		const log = input.logger;
 
 		// Configure hooks: PostToolUse for screenshot tools + PR-marker enforcement,
@@ -367,7 +370,7 @@ export class RunnerConfigBuilder {
 		const resolvedWorkspaceId =
 			input.linearWorkspaceId ??
 			input.requireLinearWorkspaceId(input.repository);
-		const mcpConfig = this.mcpConfigProvider.buildMcpConfig(
+		const mcpConfig = await this.mcpConfigProvider.buildMcpConfig(
 			input.repository.id,
 			resolvedWorkspaceId,
 			input.sessionId,

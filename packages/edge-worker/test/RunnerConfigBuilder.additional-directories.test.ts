@@ -73,7 +73,7 @@ function buildIssueConfig(session: CyrusAgentSession) {
 }
 
 describe("RunnerConfigBuilder additionalDirectories (multi-repo skill discovery)", () => {
-	it("registers each multi-repo sub-worktree as an additional directory", () => {
+	it("registers each multi-repo sub-worktree as an additional directory", async () => {
 		const session = makeSession({
 			path: "/ws/root",
 			isGitWorktree: true,
@@ -83,7 +83,7 @@ describe("RunnerConfigBuilder additionalDirectories (multi-repo skill discovery)
 			},
 		} as unknown as CyrusAgentSession["workspace"]);
 
-		const { config } = buildIssueConfig(session);
+		const { config } = await buildIssueConfig(session);
 
 		expect(config.workingDirectory).toBe("/ws/root");
 		expect(config.additionalDirectories).toEqual([
@@ -92,19 +92,19 @@ describe("RunnerConfigBuilder additionalDirectories (multi-repo skill discovery)
 		]);
 	});
 
-	it("omits additionalDirectories for single-repo sessions (cwd is the worktree)", () => {
+	it("omits additionalDirectories for single-repo sessions (cwd is the worktree)", async () => {
 		const session = makeSession({
 			path: "/ws/repo-a-worktree",
 			isGitWorktree: true,
 		} as unknown as CyrusAgentSession["workspace"]);
 
-		const { config } = buildIssueConfig(session);
+		const { config } = await buildIssueConfig(session);
 
 		expect(config.workingDirectory).toBe("/ws/repo-a-worktree");
 		expect(config.additionalDirectories).toBeUndefined();
 	});
 
-	it("excludes the cwd itself from additionalDirectories", () => {
+	it("excludes the cwd itself from additionalDirectories", async () => {
 		// A repoPaths entry equal to the workspace root must not be re-added as
 		// an --add-dir (it is already the cwd).
 		const session = makeSession({
@@ -116,7 +116,7 @@ describe("RunnerConfigBuilder additionalDirectories (multi-repo skill discovery)
 			},
 		} as unknown as CyrusAgentSession["workspace"]);
 
-		const { config } = buildIssueConfig(session);
+		const { config } = await buildIssueConfig(session);
 
 		expect(config.additionalDirectories).toEqual(["/ws/root/repo-b"]);
 	});
