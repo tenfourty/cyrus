@@ -23,6 +23,8 @@ export interface LinearOAuthConfig {
 	onTokenRefresh?: (tokens: {
 		accessToken: string;
 		refreshToken: string;
+		/** Absolute expiry of the new access token (epoch ms) */
+		expiresAt: number;
 	}) => void | Promise<void>;
 }
 
@@ -253,6 +255,11 @@ export class LinearIssueTrackerService implements IIssueTrackerService {
 			expires_in: number;
 		};
 
+		// Absolute expiry of the new access token. Persisted by callers so that
+		// proactive refresh (e.g. before building the Linear MCP server config)
+		// can tell a stale token from a fresh one without a network round-trip.
+		const expiresAt = Date.now() + data.expires_in * 1000;
+
 		// Update shared static map for all instances sharing this workspace
 		LinearIssueTrackerService.workspaceRefreshTokens.set(
 			workspaceId,
@@ -265,6 +272,7 @@ export class LinearIssueTrackerService implements IIssueTrackerService {
 				await onTokenRefresh({
 					accessToken: data.access_token,
 					refreshToken: data.refresh_token,
+					expiresAt,
 				});
 			} catch (err) {
 				this.logger.error("onTokenRefresh callback failed:", err);
@@ -298,6 +306,33 @@ export class LinearIssueTrackerService implements IIssueTrackerService {
 		if (this.linearClient.client) {
 			this.linearClient.client.setHeader("Authorization", `Bearer ${token}`);
 		}
+	}
+
+	/**
+	 * Proactively refresh the access token without waiting for a 401.
+	 *
+	 * Unlike the request interceptor (which only fires reactively on token
+	 * expiry errors), this performs the OAuth exchange on demand and pushes the
+	 * new token onto the GraphQL client. Used by callers that need a guaranteed
+	 * fresh token before handing it to a consumer that cannot self-refresh —
+	 * e.g. the static bearer token baked into the Linear MCP server config.
+	 *
+	 * Concurrent calls coalesce via the workspace-level pendingRefreshes map.
+	 *
+	 * @returns The new access token.
+	 * @throws If no OAuth config is available or the refresh request fails.
+	 */
+	async forceRefresh(): Promise<string> {
+		if (!this.oauthConfig) {
+			throw new Error("Cannot force token refresh: OAuth config not provided");
+		}
+		const newToken = await this.doTokenRefresh();
+		// Clear any cached reactive-refresh promise so it doesn't shadow this token.
+		this.refreshPromise = null;
+		if (this.linearClient.client) {
+			this.linearClient.client.setHeader("Authorization", `Bearer ${newToken}`);
+		}
+		return newToken;
 	}
 
 	/**

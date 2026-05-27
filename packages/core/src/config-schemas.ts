@@ -260,6 +260,12 @@ const PromptDefaultsSchema = z.object({
 export const LinearWorkspaceConfigSchema = z.object({
 	linearToken: z.string(),
 	linearRefreshToken: z.string().optional(),
+	/**
+	 * Absolute expiry of `linearToken` (epoch ms), recorded on each OAuth
+	 * refresh. Lets sessions proactively refresh a stale token before handing
+	 * it to consumers that cannot self-refresh (e.g. the Linear MCP server).
+	 */
+	linearTokenExpiresAt: z.number().optional(),
 	/** Linear workspace URL slug (e.g., "ceedar" from "https://linear.app/ceedar/...") */
 	linearWorkspaceSlug: z.string().optional(),
 	/** Human-readable workspace name (e.g., "Ceedar") */

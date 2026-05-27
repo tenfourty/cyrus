@@ -528,8 +528,8 @@ export class EdgeWorker extends EventEmitter {
 			this.logger,
 		);
 		this.mcpConfigService = new McpConfigService({
-			getLinearTokenForWorkspace: (workspaceId) =>
-				this.getLinearTokenForWorkspace(workspaceId),
+			ensureFreshLinearToken: (workspaceId) =>
+				this.ensureFreshLinearToken(workspaceId),
 			getIssueTracker: (workspaceId) =>
 				this.issueTrackers.get(workspaceId) as
 					| (IIssueTrackerService & {
@@ -3795,6 +3795,74 @@ ${taskSection}`;
 	}
 
 	/**
+	 * Skew applied to the stored token's expiry so a refresh happens slightly
+	 * before the access token actually dies, never on the dead edge.
+	 */
+	private static readonly LINEAR_TOKEN_REFRESH_SKEW_MS = 2 * 60 * 1000;
+
+	/**
+	 * Return a Linear access token for a workspace that is guaranteed fresh,
+	 * proactively refreshing it when the stored token has expired (or its expiry
+	 * is unknown) rather than waiting for a reactive 401.
+	 *
+	 * This exists because the Linear MCP server receives the token as a static
+	 * bearer header it cannot itself refresh; chat sessions in particular do not
+	 * reliably trigger the reactive refresh path before the MCP server connects,
+	 * so without this they intermittently come up with `linear: failed` whenever
+	 * no Linear webhook had recently warmed the token.
+	 *
+	 * Falls back to the stored token (best effort) when refresh is impossible or
+	 * fails, so callers always get whatever token we have.
+	 */
+	private async ensureFreshLinearToken(
+		linearWorkspaceId: string,
+	): Promise<string | null> {
+		const workspaceConfig = this.config.linearWorkspaces?.[linearWorkspaceId];
+		if (!workspaceConfig) {
+			return null; // CLI platform or unconfigured workspace
+		}
+
+		const storedToken = workspaceConfig.linearToken ?? null;
+
+		// Refresh is only possible when we hold a refresh token AND OAuth client
+		// credentials — the same preconditions buildOAuthConfig() requires.
+		const canRefresh =
+			!!workspaceConfig.linearRefreshToken &&
+			!!process.env.LINEAR_CLIENT_ID &&
+			!!process.env.LINEAR_CLIENT_SECRET;
+		const tracker = this.issueTrackers.get(linearWorkspaceId) as
+			| LinearIssueTrackerService
+			| undefined;
+		if (!canRefresh || typeof tracker?.forceRefresh !== "function") {
+			return storedToken;
+		}
+
+		// Token is fresh enough — only known-future expiry counts as fresh, so an
+		// unknown (legacy) expiry deliberately triggers one baseline refresh.
+		const expiresAt = workspaceConfig.linearTokenExpiresAt;
+		const isFresh =
+			typeof expiresAt === "number" &&
+			Date.now() < expiresAt - EdgeWorker.LINEAR_TOKEN_REFRESH_SKEW_MS;
+		if (isFresh) {
+			return storedToken;
+		}
+
+		try {
+			// forceRefresh resolves only after its onTokenRefresh callback has
+			// persisted the new linearTokenExpiresAt (both in memory and to disk),
+			// so the next call observes a known-future expiry and the unknown-expiry
+			// branch above fires at most once per token — not on every session.
+			return await tracker.forceRefresh();
+		} catch (error) {
+			this.logger.warn(
+				`Proactive Linear token refresh failed for workspace ${linearWorkspaceId}; falling back to stored token`,
+				error instanceof Error ? error : new Error(String(error)),
+			);
+			return storedToken;
+		}
+	}
+
+	/**
 	 * Create a new Cyrus agent session with all necessary setup
 	 * @param sessionId The Linear agent activity session ID
 	 * @param issue Linear issue object
@@ -5982,7 +6050,7 @@ ${input.userComment}
 			issueIdentifier: session.issueContext?.issueIdentifier,
 		});
 
-		const result = this.runnerConfigBuilder.buildIssueConfig({
+		const result = await this.runnerConfigBuilder.buildIssueConfig({
 			session,
 			repository,
 			sessionId,
@@ -6271,7 +6339,7 @@ ${input.userComment}
 
 					// Build MCP config for this session (same as the live runner would use)
 					const linearWorkspaceId = requireLinearWorkspaceId(repo);
-					const mcpConfig = this.mcpConfigService.buildMcpConfig(
+					const mcpConfig = await this.mcpConfigService.buildMcpConfig(
 						repo.id,
 						linearWorkspaceId,
 						session.id,
@@ -6899,12 +6967,15 @@ ${input.userComment}
 						tokens.accessToken;
 					this.config.linearWorkspaces[linearWorkspaceId].linearRefreshToken =
 						tokens.refreshToken;
+					this.config.linearWorkspaces[linearWorkspaceId].linearTokenExpiresAt =
+						tokens.expiresAt;
 				}
 
 				// Persist tokens to config.json
 				await this.saveOAuthTokens({
 					linearToken: tokens.accessToken,
 					linearRefreshToken: tokens.refreshToken,
+					linearTokenExpiresAt: tokens.expiresAt,
 					linearWorkspaceId: linearWorkspaceId,
 					linearWorkspaceName: workspaceName,
 				});
@@ -6918,6 +6989,7 @@ ${input.userComment}
 	private async saveOAuthTokens(tokens: {
 		linearToken: string;
 		linearRefreshToken?: string;
+		linearTokenExpiresAt?: number;
 		linearWorkspaceId: string;
 		linearWorkspaceName?: string;
 	}): Promise<void> {
@@ -6938,6 +7010,16 @@ ${input.userComment}
 			// Update workspace-level token storage
 			config.linearWorkspaces[tokens.linearWorkspaceId] = {
 				linearToken: tokens.linearToken,
+				...(typeof tokens.linearTokenExpiresAt === "number"
+					? { linearTokenExpiresAt: tokens.linearTokenExpiresAt }
+					: config.linearWorkspaces[tokens.linearWorkspaceId]
+								?.linearTokenExpiresAt
+						? {
+								linearTokenExpiresAt:
+									config.linearWorkspaces[tokens.linearWorkspaceId]
+										.linearTokenExpiresAt,
+							}
+						: {}),
 				...(tokens.linearRefreshToken
 					? { linearRefreshToken: tokens.linearRefreshToken }
 					: config.linearWorkspaces[tokens.linearWorkspaceId]

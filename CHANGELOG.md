@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Slack/chat sessions no longer intermittently lose Linear access.** Chat-initiated sessions could start with the Linear connection in a failed state once the stored access token had aged out, leaving the agent unable to look up or create Linear issues (and prone to incorrectly claiming Slack sessions are "scoped to research by design"). The Linear token is now proactively refreshed when stale before each session starts, instead of only after a Linear event happened to refresh it.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed
