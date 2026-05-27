@@ -210,7 +210,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const parentSessionId = "parent-session-123";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				parentSessionId,
@@ -276,7 +278,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const feedbackMessage = "Test feedback without known parent";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				undefined, // No parent session ID
@@ -310,7 +314,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const feedbackMessage = "This should fail";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				"parent-session-123",
@@ -340,7 +346,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const feedbackMessage = "This should also fail";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				"parent-session-123",
@@ -368,7 +376,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const feedbackMessage = "This will cause resume to fail";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				"parent-session-123",
@@ -406,7 +416,9 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			const feedbackMessage = "Test feedback across repositories";
 
 			// Build MCP config which will trigger createCyrusToolsServer
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				"parent-session-123",
@@ -434,12 +446,14 @@ describe("EdgeWorker - Feedback Delivery", () => {
 	});
 
 	describe("Integration with cyrus-tools server", () => {
-		it("should properly configure feedback delivery callback in MCP config", () => {
+		it("should properly configure feedback delivery callback in MCP config", async () => {
 			// Arrange
 			const parentSessionId = "parent-session-123";
 
 			// Act
-			const _mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+			const _mcpConfig = await (
+				edgeWorker as any
+			).mcpConfigService.buildMcpConfig(
 				mockRepository.id,
 				mockRepository.linearWorkspaceId,
 				parentSessionId,
@@ -463,12 +477,14 @@ describe("EdgeWorker - Feedback Delivery", () => {
 			expect(mockOnSessionCreated).toBeDefined();
 		});
 
-		it("should include CYRUS_API_KEY as Authorization header for cyrus-tools MCP config", () => {
+		it("should include CYRUS_API_KEY as Authorization header for cyrus-tools MCP config", async () => {
 			const previousApiKey = process.env.CYRUS_API_KEY;
 			process.env.CYRUS_API_KEY = "test-cyrus-api-key";
 
 			try {
-				const mcpConfig = (edgeWorker as any).mcpConfigService.buildMcpConfig(
+				const mcpConfig = await (
+					edgeWorker as any
+				).mcpConfigService.buildMcpConfig(
 					mockRepository.id,
 					mockRepository.linearWorkspaceId,
 					"parent-session-123",

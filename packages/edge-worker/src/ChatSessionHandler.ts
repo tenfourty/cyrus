@@ -232,7 +232,7 @@ export class ChatSessionHandler<TEvent> {
 			const systemPrompt = this.adapter.buildSystemPrompt(event);
 
 			// Build runner config
-			const runnerConfig = this.buildRunnerConfig(
+			const runnerConfig = await this.buildRunnerConfig(
 				session.workspace.path,
 				sessionId,
 				systemPrompt,
@@ -331,7 +331,7 @@ export class ChatSessionHandler<TEvent> {
 	): Promise<void> {
 		const systemPrompt = this.adapter.buildSystemPrompt(event);
 
-		const runnerConfig = this.buildRunnerConfig(
+		const runnerConfig = await this.buildRunnerConfig(
 			existingSession.workspace.path,
 			sessionId,
 			systemPrompt,
@@ -460,13 +460,13 @@ export class ChatSessionHandler<TEvent> {
 	 * Build a runner config for a chat session.
 	 * Delegates to RunnerConfigBuilder for config assembly.
 	 */
-	private buildRunnerConfig(
+	private async buildRunnerConfig(
 		workspacePath: string,
 		workspaceName: string | undefined,
 		systemPrompt: string,
 		sessionId: string,
 		resumeSessionId?: string,
-	): AgentRunnerConfig {
+	): Promise<AgentRunnerConfig> {
 		const sessionLogger = this.logger.withContext({
 			sessionId,
 			platform: this.adapter.platformName,
