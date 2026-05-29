@@ -82,6 +82,11 @@ export class AgentSessionManager extends EventEmitter {
 	private taskSubjectsById: Map<string, string> = new Map(); // Cache task subjects by task ID (e.g., "1" → "Fix login bug")
 	private activeStatusActivitiesBySession: Map<string, string> = new Map(); // Maps session ID to active compacting status activity ID
 	private stopRequestedSessions: Set<string> = new Set(); // Sessions explicitly stopped by user signal
+	// Per-session set of `${serverName}:${status}` already surfaced as MCP
+	// attach-failure thoughts. Resumes/continuations re-emit `init`, and
+	// without this dedup a persistently-failed MCP server would accrue a
+	// duplicate timeline thought on every prompted turn.
+	private surfacedMcpFailures: Map<string, Set<string>> = new Map();
 	// Per-session serialization queue for handleClaudeMessage. The EdgeWorker's
 	// onMessage callback is fire-and-forget, so without serialization the async
 	// handlers can interleave — causing tool_result to be processed before its
@@ -530,6 +535,11 @@ export class AgentSessionManager extends EventEmitter {
 								systemMessage.model,
 							);
 						}
+
+						// Surface any MCP server that did not finish attaching. Without
+						// this, a failed server silently strips its tools and the agent
+						// either errors opaquely or fabricates a capability limitation.
+						await this.surfaceFailedMcpServers(sessionId, systemMessage);
 					} else if (message.subtype === "status") {
 						// Handle status updates (compacting, etc.)
 						await this.handleStatusMessage(
@@ -1642,6 +1652,7 @@ export class AgentSessionManager extends EventEmitter {
 		this.lastAssistantBodyBySession.delete(sessionId);
 		this.bufferedAssistantEntryBySession.delete(sessionId);
 		this.messageProcessingQueues.delete(sessionId);
+		this.surfacedMcpFailures.delete(sessionId);
 		log.debug("Removed session");
 	}
 
@@ -1738,6 +1749,74 @@ export class AgentSessionManager extends EventEmitter {
 			{ content: { type: "thought", body: `Using model: ${model}` } },
 			"model notification",
 		);
+	}
+
+	/**
+	 * Surface any MCP server that the runner reported as having failed to
+	 * attach at session init.
+	 *
+	 * Only `failed` and `needs-auth` are surfaced. `pending` is transient
+	 * (init is a point-in-time snapshot; a server still mid-handshake reads
+	 * `pending` and may transition to `connected` within the same session),
+	 * and `disabled` is an operator-intentional state — neither warrants the
+	 * "did not attach" framing.
+	 *
+	 * For each surfaced server, this logs a warn for the operator and posts a
+	 * timeline thought (when an activity sink is registered — i.e. for
+	 * issue-tracker sessions). Chat sessions without an activity sink rely on
+	 * the operator log plus the system-prompt nudge driving the agent's own
+	 * user-facing report.
+	 *
+	 * Resumes and continuations re-emit `init`. We dedupe per
+	 * (sessionId, serverName, status) so a long-running session against a
+	 * persistently-failed MCP server does not accrue a duplicate thought on
+	 * every prompted turn.
+	 *
+	 * Generic across MCP servers — covers `linear`, `slack`, `cyrus-tools`,
+	 * `cyrus-docs`, and any file-based servers from `mcpConfigPath`.
+	 */
+	private async surfaceFailedMcpServers(
+		sessionId: string,
+		message: SDKSystemMessage,
+	): Promise<void> {
+		const servers = message.mcp_servers;
+		if (!Array.isArray(servers) || servers.length === 0) {
+			return;
+		}
+
+		const log = this.sessionLog(sessionId);
+		let surfaced = this.surfacedMcpFailures.get(sessionId);
+
+		for (const server of servers) {
+			if (!server) continue;
+			if (server.status !== "failed" && server.status !== "needs-auth")
+				continue;
+
+			const dedupKey = `${server.name}:${server.status}`;
+			if (surfaced?.has(dedupKey)) continue;
+
+			// The init message's mcp_servers is a two-field projection —
+			// { name, status } only. The underlying reason (e.g. the connection
+			// error) is not included here; it is only reachable via
+			// `Query.mcpServerStatus()`, which this function does not call.
+			const body = `⚠️ MCP server \`${server.name}\` did not attach (status: ${server.status}). Tools prefixed \`mcp__${server.name}__*\` are unavailable for this session — if a required capability is missing, report the connection failure rather than improvising around it.`;
+
+			log.warn(
+				`MCP server "${server.name}" attached with status="${server.status}" — tools unavailable for session ${sessionId}`,
+			);
+
+			await this.postActivity(
+				sessionId,
+				{ content: { type: "thought", body } },
+				`mcp ${server.name} ${server.status}`,
+			);
+
+			if (!surfaced) {
+				surfaced = new Set<string>();
+				this.surfacedMcpFailures.set(sessionId, surfaced);
+			}
+			surfaced.add(dedupKey);
+		}
 	}
 
 	/**

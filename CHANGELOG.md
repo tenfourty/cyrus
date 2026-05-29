@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- When an integration such as Linear or Slack fails to connect, Cyrus now tells you in the session instead of silently behaving as if the tools were never meant to be there.
 
 ## [0.2.67] - 2026-07-25
 

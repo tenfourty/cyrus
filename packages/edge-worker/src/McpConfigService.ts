@@ -133,6 +133,14 @@ export class McpConfigService {
 		// Inject the Slack MCP server whenever SLACK_BOT_TOKEN is available —
 		// per-platform availability is enforced upstream by the allowed-tools
 		// array. https://github.com/korotovsky/slack-mcp-server
+		//
+		// Pinned to an exact version, NOT `@latest` (see CYPACK-1239 / #1247):
+		// the 1.3.0 release switched channel-enumeration at boot from a soft
+		// warning to a fatal `missing_scope` exit, which would silently flip
+		// the Slack MCP server from `connected` to `failed` across restarts on
+		// installs whose bot scopes hadn't been re-granted. Bumping this pin
+		// should be a deliberate code change paired with whatever new scopes
+		// the upstream release requires.
 		const slackBotToken = process.env.SLACK_BOT_TOKEN?.trim();
 		if (slackBotToken) {
 			mcpConfig.slack = {
