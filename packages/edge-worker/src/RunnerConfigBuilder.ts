@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
 	getClaudeProjectAutoMemoryDir,
 	type HookCallbackMatcher,
@@ -157,6 +158,43 @@ export function withAutoMemoryAllowedDirectory(
 }
 
 /**
+ * Read the `mcpServers` keys from one or more `.mcp.json` files referenced by
+ * `mcpConfigPath`. Used to extend allowedTools' `mcp__<name>` prefix list to
+ * also cover servers loaded from disk — without this, repo-registered MCP
+ * servers connect at session start but their tools are rejected by allowedTools
+ * enforcement (the agent typically misreads the denial as a missing approval
+ * prompt).
+ *
+ * Failures are logged at debug and skipped — never throws, since a missing or
+ * malformed file should not block session creation (mirrors ClaudeRunner's
+ * tolerant `.mcp.json` parsing).
+ */
+export function readMcpServerNamesFromPaths(
+	mcpConfigPath: string | string[] | undefined,
+	logger?: ILogger,
+): string[] {
+	if (!mcpConfigPath) return [];
+	const paths = Array.isArray(mcpConfigPath) ? mcpConfigPath : [mcpConfigPath];
+	const names = new Set<string>();
+	for (const path of paths) {
+		try {
+			const parsed = JSON.parse(readFileSync(path, "utf8"));
+			const servers = parsed?.mcpServers;
+			if (servers && typeof servers === "object") {
+				for (const name of Object.keys(servers)) names.add(name);
+			}
+		} catch (err) {
+			logger?.debug(
+				`readMcpServerNamesFromPaths: skipping ${path} (${
+					err instanceof Error ? err.message : String(err)
+				})`,
+			);
+		}
+	}
+	return Array.from(names);
+}
+
+/**
  * Shared runner config assembly for both issue and chat sessions.
  *
  * Eliminates duplication between EdgeWorker.buildAgentRunnerConfig() and
@@ -209,7 +247,16 @@ export class RunnerConfigBuilder {
 			tool.startsWith("mcp__"),
 		);
 
-		const mcpConfigKeys = mcpConfig ? Object.keys(mcpConfig) : undefined;
+		// Server names come from BOTH the inline mcpConfig (linear/cyrus-tools/
+		// cyrus-docs/slack) AND any `.mcp.json` files referenced by mcpConfigPath.
+		// Without the file-derived union, repo-registered MCP servers connect but
+		// their tools are rejected by allowedTools enforcement.
+		const inlineKeys = mcpConfig ? Object.keys(mcpConfig) : [];
+		const fileKeys = readMcpServerNamesFromPaths(mcpConfigPath, input.logger);
+		const mcpConfigKeys =
+			inlineKeys.length || fileKeys.length
+				? Array.from(new Set([...inlineKeys, ...fileKeys]))
+				: undefined;
 		const allowedTools = this.chatToolResolver.buildChatAllowedTools(
 			mcpConfigKeys,
 			userMcpTools,
@@ -333,12 +380,28 @@ export class RunnerConfigBuilder {
 			input.repository.repositoryPath,
 		);
 
+		// Augment allowedTools with `mcp__<name>` prefixes for servers declared
+		// via `mcpConfigPath` (mirrors the chat-session fix in buildChatConfig).
+		// The ToolPermissionResolver only adds prefixes for INLINE mcpConfig
+		// servers; without this union, MCP servers loaded from `.mcp.json` files
+		// connect but their tools are rejected by allowedTools enforcement.
+		const fileMcpNames = readMcpServerNamesFromPaths(mcpConfigPath, log);
+		const allowedToolsWithFileMcps =
+			fileMcpNames.length > 0
+				? Array.from(
+						new Set([
+							...input.allowedTools,
+							...fileMcpNames.map((n) => `mcp__${n}`),
+						]),
+					)
+				: input.allowedTools;
+
 		const config: AgentRunnerConfig & Record<string, unknown> = {
 			workingDirectory: resolveSessionWorkingDirectory(
 				input.session,
 				input.repository,
 			),
-			allowedTools: input.allowedTools,
+			allowedTools: allowedToolsWithFileMcps,
 			disallowedTools: input.disallowedTools,
 			allowedDirectories: allowedDirectoriesWithMemory,
 			workspaceName: input.session.issue?.identifier || input.session.issueId,
