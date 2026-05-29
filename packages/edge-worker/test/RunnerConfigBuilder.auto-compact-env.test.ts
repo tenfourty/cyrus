@@ -87,9 +87,9 @@ function makeBaseInput(
 }
 
 describe("RunnerConfigBuilder auto-compact env injection", () => {
-	it("injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is set on a sandbox-DISABLED install", () => {
+	it("injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is set on a sandbox-DISABLED install", async () => {
 		const builder = makeBuilder();
-		const result = builder.buildIssueConfig(
+		const result = await builder.buildIssueConfig(
 			makeBaseInput({
 				autoCompactThresholdPercent: 50,
 				sandboxSettings: undefined,
@@ -102,9 +102,9 @@ describe("RunnerConfigBuilder auto-compact env injection", () => {
 		expect(env?.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe("50");
 	});
 
-	it("injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is set AND sandbox is enabled (coexists with egress CA cert vars)", () => {
+	it("injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is set AND sandbox is enabled (coexists with egress CA cert vars)", async () => {
 		const builder = makeBuilder();
-		const result = builder.buildIssueConfig(
+		const result = await builder.buildIssueConfig(
 			makeBaseInput({
 				autoCompactThresholdPercent: 75,
 				sandboxSettings: {
@@ -123,9 +123,9 @@ describe("RunnerConfigBuilder auto-compact env injection", () => {
 		expect(env?.NODE_EXTRA_CA_CERTS).toBe("/etc/cyrus/ca.pem");
 	});
 
-	it("does not inject CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is not configured", () => {
+	it("does not inject CLAUDE_AUTOCOMPACT_PCT_OVERRIDE when threshold is not configured", async () => {
 		const builder = makeBuilder();
-		const result = builder.buildIssueConfig(
+		const result = await builder.buildIssueConfig(
 			makeBaseInput({
 				autoCompactThresholdPercent: undefined,
 				sandboxSettings: undefined,
