@@ -15,6 +15,10 @@ import { AgentSessionManager } from "../src/AgentSessionManager.js";
 import { EdgeWorker } from "../src/EdgeWorker.js";
 import { SharedApplicationServer } from "../src/SharedApplicationServer.js";
 import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
+import {
+	createMockAgentSessionManager,
+	createMockIssueTracker,
+} from "./edgeWorkerMocks.js";
 import { TEST_CYRUS_HOME } from "./test-dirs.js";
 
 // Mock fs/promises
@@ -127,9 +131,9 @@ describe("EdgeWorker - System Prompt Resume", () => {
 			return mockClaudeRunner;
 		});
 
-		// Mock AgentSessionManager
-		mockAgentSessionManager = {
-			createCyrusAgentSession: vi.fn(),
+		// Mock AgentSessionManager (shared factory auto-stubs every method, so new
+		// AgentSessionManager methods never break this test; override per-scenario)
+		mockAgentSessionManager = createMockAgentSessionManager({
 			getSession: vi.fn().mockReturnValue({
 				id: "agent-session-123",
 				externalSessionId: "agent-session-123",
@@ -150,14 +154,10 @@ describe("EdgeWorker - System Prompt Resume", () => {
 				claudeRunner: mockClaudeRunner,
 			}),
 			addAgentRunner: vi.fn(),
-			getAllClaudeRunners: vi.fn().mockReturnValue([]),
-			serializeState: vi.fn().mockReturnValue({ sessions: {}, entries: {} }),
 			restoreState: vi.fn(),
-			postAnalyzingThought: vi.fn().mockResolvedValue(null),
-			createThoughtActivity: vi.fn().mockResolvedValue(undefined),
 			setActivitySink: vi.fn(),
 			on: vi.fn(), // EventEmitter method
-		};
+		});
 		vi.mocked(AgentSessionManager).mockImplementation(function () {
 			return mockAgentSessionManager;
 		});
@@ -219,14 +219,14 @@ Issue: {{issue_identifier}}`;
 
 		edgeWorker = new EdgeWorker(mockConfig);
 
-		// Inject mock issue tracker for the test repository
-		const mockIssueTracker = {
+		// Inject mock issue tracker for the test repository (shared factory
+		// auto-stubs every method, so new tracker methods never break this test)
+		const mockIssueTracker = createMockIssueTracker({
 			fetchIssue: vi.fn().mockImplementation(async (issueId: string) => {
 				return mockLinearClient.issue(issueId);
 			}),
 			getIssueLabels: vi.fn().mockResolvedValue([{ name: "bug" }]),
-			getClient: vi.fn().mockReturnValue({}),
-		};
+		});
 		(edgeWorker as any).issueTrackers.set(
 			mockRepository.linearWorkspaceId,
 			mockIssueTracker,
