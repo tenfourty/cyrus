@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Slack chat sessions no longer silently lose Slack tools after a Cyrus restart.** The bundled `slack-mcp-server` was launched via `npx -y slack-mcp-server@latest`, so an upstream `1.3.0` release that switched channel-enumeration at boot from a soft warning to a fatal `missing_scope` exit silently flipped the Slack MCP server from connected to failed across restarts on installs whose bot scopes did not include the newly-required scope. The version is now pinned (`slack-mcp-server@1.2.3`) so an upstream change cannot silently break Slack sessions without an explicit code bump.
+- **Failed MCP server attachments are now visible.** When any MCP server (`linear`, `slack`, `cyrus-tools`, `cyrus-docs`, or any file-based server) attaches in a non-`connected` state at session init, Cyrus posts a one-line warning thought to the session timeline naming the server and the underlying error (when the runner provides one), and emits a matching `warn` log line. Previously the failure was invisible — the operator had no signal in the tracker, and the agent simply lacked the tools without any context for why. Generic across all MCP servers.
+- **Slack system prompt now tells the agent to report missing-tool failures instead of improvising.** A new `## Tool Availability` section instructs the agent that an `mcp__<server>__*` tool absent from its tool list means the corresponding MCP server failed to attach, and to surface that to the user (with the server name and error) rather than reframing the gap as intentional scope. Closes the failure mode where Slack-initiated sessions told users "I'm scoped to research/Q&A by design" when the Linear or Slack MCP server had actually failed to connect.
+
 ## [0.2.51] - 2026-04-30
 
 ### Changed

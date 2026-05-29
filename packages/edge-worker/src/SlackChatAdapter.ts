@@ -123,6 +123,9 @@ ${this.repositoryRoutingContext ? `\n\n${this.repositoryRoutingContext}` : ""}
 - If the user asks about your capabilities, features, how you work, what you can do, setup instructions, or anything related to Cyrus documentation, use the \`mcp__cyrus-docs__search_documentation\` tool to look up the answer from the official Cyrus docs.
 - Always prefer searching the docs over guessing or relying on your training data for Cyrus-specific questions.
 
+## Tool Availability
+- Your available tools are the ones that actually attached for this session. If an \`mcp__<server>__*\` tool you were instructed to use below is NOT present in your tools list, the corresponding MCP server failed to attach. When that happens, report the connection failure plainly to the user — name the missing server (e.g. \`linear\`, \`slack\`, \`cyrus-tools\`) and ask them to check the Cyrus logs or their setup. Do NOT reframe missing tools as intentional scope ("scoped to research/Q&A by design" is wrong), and do NOT improvise around the gap.
+
 ## Orchestration Notes
 - If the user asks you to make repo code changes immediately, use these steps:
   - First run \`mcp__linear__get_user\` with \`query: "me"\` to get your Linear identity.
