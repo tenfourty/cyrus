@@ -15,6 +15,7 @@ import { AgentSessionManager } from "../src/AgentSessionManager.js";
 import { EdgeWorker } from "../src/EdgeWorker.js";
 import { SharedApplicationServer } from "../src/SharedApplicationServer.js";
 import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
+import { createMockAgentSessionManager } from "./edgeWorkerMocks.js";
 import { TEST_CYRUS_HOME } from "./test-dirs.js";
 
 // Mock fs/promises
@@ -192,22 +193,18 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			return mockCursorRunner;
 		});
 
-		// Mock AgentSessionManager
-		mockAgentSessionManager = {
-			createCyrusAgentSession: vi.fn(),
+		// Mock AgentSessionManager (shared factory auto-stubs every method, so new
+		// AgentSessionManager methods never break this test; override per-scenario)
+		mockAgentSessionManager = createMockAgentSessionManager({
 			getSession: vi.fn().mockReturnValue({
 				issueId: "issue-123",
 				workspace: { path: "/test/workspaces/TEST-123" },
 			}),
 			addAgentRunner: vi.fn(),
-			getAllAgentRunners: vi.fn().mockReturnValue([]),
-			serializeState: vi.fn().mockReturnValue({ sessions: {}, entries: {} }),
 			restoreState: vi.fn(),
-			postAnalyzingThought: vi.fn().mockResolvedValue(null),
-			createThoughtActivity: vi.fn().mockResolvedValue(undefined),
 			setActivitySink: vi.fn(),
 			on: vi.fn(), // EventEmitter method
-		};
+		});
 		vi.mocked(AgentSessionManager).mockImplementation(function () {
 			return mockAgentSessionManager;
 		});
