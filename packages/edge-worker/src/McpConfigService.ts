@@ -139,11 +139,20 @@ export class McpConfigService {
 
 		// Conditionally inject the Slack MCP server when SLACK_BOT_TOKEN is available
 		// https://github.com/korotovsky/slack-mcp-server
+		//
+		// Pinned to an exact version, NOT `@latest`. The 1.3.0 release (2026-05-14)
+		// switched channel-enumeration at boot from a soft warning to a fatal
+		// `missing_scope` exit, which silently flipped the Slack MCP server from
+		// `connected` to `failed` across Cyrus restarts on installs whose bot
+		// scopes did not yet include `im:read`. Bumping this pin should be a
+		// deliberate code change paired with whatever new scopes the upstream
+		// release requires (see skills/cyrus-setup-slack/SKILL.md for the
+		// scope manifest).
 		const slackBotToken = process.env.SLACK_BOT_TOKEN?.trim();
 		if (slackBotToken && !options?.excludeSlackMcp) {
 			mcpConfig.slack = {
 				command: "npx",
-				args: ["-y", "slack-mcp-server@latest", "--transport", "stdio"],
+				args: ["-y", "slack-mcp-server@1.2.3", "--transport", "stdio"],
 				env: {
 					SLACK_MCP_XOXB_TOKEN: slackBotToken,
 				},
