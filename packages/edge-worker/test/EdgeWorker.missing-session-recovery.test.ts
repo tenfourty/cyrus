@@ -8,6 +8,10 @@ import { AgentSessionManager } from "../src/AgentSessionManager.js";
 import { EdgeWorker } from "../src/EdgeWorker.js";
 import { SharedApplicationServer } from "../src/SharedApplicationServer.js";
 import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
+import {
+	createMockAgentSessionManager,
+	createMockIssueTracker,
+} from "./edgeWorkerMocks.js";
 import { TEST_CYRUS_HOME } from "./test-dirs.js";
 
 // Mock all dependencies
@@ -84,12 +88,10 @@ describe("EdgeWorker - Missing Session/Repository Recovery (CYPACK-852)", () => 
 				}) as any,
 		);
 
-		// Mock AgentSessionManager with methods for recovery testing
-		mockAgentSessionManager = {
-			hasAgentRunner: vi.fn().mockReturnValue(false),
-			getSession: vi.fn().mockReturnValue(null), // No session found (simulates missing session)
-			getSessionsByIssueId: vi.fn().mockReturnValue([]),
-			getActiveSessionsByIssueId: vi.fn().mockReturnValue([]),
+		// Mock AgentSessionManager (shared factory auto-stubs every method, so new
+		// AgentSessionManager methods never break these tests; getSession defaults
+		// to null to simulate a missing session)
+		mockAgentSessionManager = createMockAgentSessionManager({
 			createCyrusAgentSession: vi.fn().mockReturnValue({
 				id: "recovered-session",
 				status: "active",
@@ -100,14 +102,7 @@ describe("EdgeWorker - Missing Session/Repository Recovery (CYPACK-852)", () => 
 				},
 				workspace: { path: "/test/workspaces/TEST-123", isGitWorktree: false },
 			}),
-			createResponseActivity: vi.fn().mockResolvedValue(undefined),
-			postAnalyzingThought: vi.fn().mockResolvedValue(undefined),
-			requestSessionStop: vi.fn(),
-			consumeStopRequest: vi.fn(),
-			markSessionResuming: vi.fn(),
-			setActivitySink: vi.fn(),
-			on: vi.fn(),
-		};
+		});
 
 		vi.mocked(AgentSessionManager).mockImplementation(
 			() => mockAgentSessionManager,
@@ -171,9 +166,9 @@ describe("EdgeWorker - Missing Session/Repository Recovery (CYPACK-852)", () => 
 		// Set up single agent session manager (but WITHOUT cached repository mappings)
 		(edgeWorker as any).agentSessionManager = mockAgentSessionManager;
 
-		// Mock issue tracker
-		const mockIssueTracker = {
-			getClient: vi.fn().mockReturnValue({}),
+		// Mock issue tracker (shared factory auto-stubs every method, so new tracker
+		// methods never break these tests)
+		const mockIssueTracker = createMockIssueTracker({
 			fetchIssue: vi.fn().mockResolvedValue({
 				id: "issue-123",
 				identifier: "TEST-123",
@@ -183,8 +178,7 @@ describe("EdgeWorker - Missing Session/Repository Recovery (CYPACK-852)", () => 
 				team: { id: "test-workspace", key: "TEST", name: "Test Team" },
 			}),
 			fetchComment: vi.fn().mockResolvedValue(null),
-			notifyTurnStarted: vi.fn(),
-		};
+		});
 		(edgeWorker as any).issueTrackers.set("test-workspace", mockIssueTracker);
 	});
 
