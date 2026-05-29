@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- MCP servers registered through a repository's own `.mcp.json` file are now actually usable by the agent. Previously such a server would connect at session start and its tools would appear, but every tool call was silently rejected — so the agent could see the tools yet never invoke them, and often misreported the failure as a pending approval prompt. Tool calls to these servers now succeed in both Linear issue and chat (e.g. Slack) sessions.
 
 ## [0.2.67] - 2026-07-25
 
