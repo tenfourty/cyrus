@@ -204,9 +204,14 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 
 		await manager.handleClaudeMessage(sessionId, buildResultMessage());
 
-		expect(terminalEvents).toHaveLength(1);
-		const event = terminalEvents[0] as { sessionId: string };
-		expect(event.sessionId).toBe(sessionId);
+		// A result message intentionally fires session_terminal twice: the
+		// pre-flip drain-tracking emit, then the post-flip persistence emit via
+		// completeSession -> updateSessionStatus. This double-emit is documented
+		// as safe (consumers are idempotent). Both carry the same sessionId.
+		expect(terminalEvents).toHaveLength(2);
+		for (const event of terminalEvents as { sessionId: string }[]) {
+			expect(event.sessionId).toBe(sessionId);
+		}
 	});
 
 	it("getPendingToolUseIds returns open set and clears on tool_result", async () => {
