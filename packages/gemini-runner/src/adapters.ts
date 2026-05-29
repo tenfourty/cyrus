@@ -38,11 +38,13 @@ function createBetaMessage(
 		model: "gemini-3" as const,
 		stop_reason: null,
 		stop_sequence: null,
+		stop_details: null,
 		usage: {
 			input_tokens: 0,
 			output_tokens: 0,
 			cache_creation_input_tokens: 0,
 			cache_read_input_tokens: 0,
+			output_tokens_details: null,
 			cache_creation: null,
 			inference_geo: null,
 			iterations: null,
@@ -52,6 +54,7 @@ function createBetaMessage(
 		},
 		container: null,
 		context_management: null,
+		diagnostics: null,
 	};
 }
 
@@ -230,6 +233,7 @@ export function geminiEventToSDKMessage(
 						},
 						inference_geo: "unknown",
 						iterations: [],
+						output_tokens_details: { thinking_tokens: 0 },
 						server_tool_use: {
 							web_fetch_requests: 0,
 							web_search_requests: 0,
@@ -266,6 +270,7 @@ export function geminiEventToSDKMessage(
 						},
 						inference_geo: "unknown",
 						iterations: [],
+						output_tokens_details: { thinking_tokens: 0 },
 						server_tool_use: {
 							web_fetch_requests: 0,
 							web_search_requests: 0,
@@ -305,6 +310,7 @@ export function geminiEventToSDKMessage(
 					},
 					inference_geo: "unknown",
 					iterations: [],
+					output_tokens_details: { thinking_tokens: 0 },
 					server_tool_use: {
 						web_fetch_requests: 0,
 						web_search_requests: 0,

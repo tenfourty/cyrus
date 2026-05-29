@@ -29,6 +29,13 @@ export interface ClaudeRunnerConfig {
 	allowedTools?: string[];
 	disallowedTools?: string[];
 	allowedDirectories?: string[];
+	/**
+	 * Extra working-tree roots passed to the SDK `additionalDirectories` option
+	 * (the `--add-dir` flag). Beyond widening the permission scope, `--add-dir`
+	 * auto-loads each directory's `.claude/skills/` — the documented exception
+	 * that makes repo-local skills in multi-repo sub-worktrees discoverable.
+	 */
+	additionalDirectories?: string[];
 	resumeSessionId?: string; // Session ID to resume from previous Claude session
 	workspaceName?: string;
 	systemPrompt?: string;
@@ -48,6 +55,18 @@ export interface ClaudeRunnerConfig {
 	};
 	hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>; // Claude SDK hooks
 	plugins?: SdkPluginConfig[]; // Plugins providing skills, agents, hooks, and MCP servers
+	/**
+	 * Filter which Skills the main session can invoke. Passed through to the
+	 * SDK's `query()` `skills` option.
+	 * - `undefined`: no SDK auto-configuration (CLI defaults apply).
+	 * - `'all'`: enable every discovered skill.
+	 * - `string[]`: enable only the listed skills (by SKILL.md `name` /
+	 *   directory name, or `plugin:skill` for plugin-qualified skills).
+	 *
+	 * This is a context filter, not a sandbox — unlisted skills are hidden from
+	 * the model's listing but the files remain on disk.
+	 */
+	skills?: string[] | "all";
 	outputFormat?: OutputFormatConfig; // Structured output format configuration
 	sandbox?: SandboxSettings; // Sandbox settings (enabled, network proxy ports, etc.)
 	/** Additional environment variables to pass to the Claude child process (merged after process.env) */
@@ -63,7 +82,7 @@ export interface ClaudeRunnerConfig {
 		headers?: Record<string, string>;
 	};
 	pathToClaudeCodeExecutable?: string; // Explicit path to Claude Code CLI executable (auto-resolved if not set)
-	extraArgs?: Record<string, string | null>; // Additional CLI arguments to pass to Claude Code (e.g., { chrome: null } for --chrome flag)
+	extraArgs?: Record<string, string | null>; // Additional CLI arguments to pass to Claude Code (e.g., { 'output-format': 'json' } for --output-format=json, or { verbose: null } for boolean flags)
 	/**
 	 * Callback for handling AskUserQuestion tool invocations.
 	 * When provided, the ClaudeRunner will intercept AskUserQuestion tool calls
@@ -87,6 +106,12 @@ export interface ClaudeRunnerConfig {
 	 * the ephemeral worktree and can be resumed from any host.
 	 */
 	sessionStore?: SessionStore;
+	/**
+	 * Custom directory path for Claude's auto-memory storage. Forwarded to the
+	 * Claude SDK as settings.autoMemoryDirectory. When unset, the SDK falls
+	 * back to its default (~/.claude/projects/<sanitized-cwd>/memory/).
+	 */
+	autoMemoryDirectory?: string;
 }
 
 export interface ClaudeSessionInfo {

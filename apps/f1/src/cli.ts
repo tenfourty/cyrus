@@ -15,12 +15,17 @@ import { createAssignIssueCommand } from "./commands/assignIssue.js";
 import { createCreateCommentCommand } from "./commands/createComment.js";
 import { createCreateIssueCommand } from "./commands/createIssue.js";
 import { createInitTestRepoCommand } from "./commands/initTestRepo.js";
+import { createListChatThreadsCommand } from "./commands/listChatThreads.js";
 import { createPingCommand } from "./commands/ping.js";
+import { createPromptChatThreadCommand } from "./commands/promptChatThread.js";
 import { createPromptSessionCommand } from "./commands/promptSession.js";
+import { createStartChatSessionCommand } from "./commands/startChatSession.js";
 import { createStartSessionCommand } from "./commands/startSession.js";
 import { createStatusCommand } from "./commands/status.js";
 import { createStopSessionCommand } from "./commands/stopSession.js";
+import { createTerminateIssueCommand } from "./commands/terminateIssue.js";
 import { createVersionCommand } from "./commands/version.js";
+import { createViewChatThreadCommand } from "./commands/viewChatThread.js";
 import { createViewSessionCommand } from "./commands/viewSession.js";
 import { bold, cyan } from "./utils/colors.js";
 
@@ -61,9 +66,14 @@ program.addCommand(createCreateIssueCommand());
 program.addCommand(createAssignIssueCommand());
 program.addCommand(createCreateCommentCommand());
 program.addCommand(createStartSessionCommand());
+program.addCommand(createStartChatSessionCommand());
+program.addCommand(createListChatThreadsCommand());
+program.addCommand(createViewChatThreadCommand());
+program.addCommand(createPromptChatThreadCommand());
 program.addCommand(createViewSessionCommand());
 program.addCommand(createPromptSessionCommand());
 program.addCommand(createStopSessionCommand());
+program.addCommand(createTerminateIssueCommand());
 program.addCommand(createInitTestRepoCommand());
 
 // Parse arguments

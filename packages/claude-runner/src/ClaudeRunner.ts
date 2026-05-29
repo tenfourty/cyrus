@@ -90,7 +90,7 @@ function serializeQueryOptionsReplacer(_key: string, value: unknown): unknown {
  *   - model / fallbackModel / maxTurns / outputFormat
  *   - system prompt SHAPE (type/preset/has-append) — not the text
  *   - tool allowlist/denylist (counts + first 50 entries)
- *   - resumeSessionId, workingDirectory, allowedDirectories
+ *   - resumeSessionId, workingDirectory, additionalDirectories
  *   - mcpServer NAMES only
  *   - presence flags for hooks/plugins/canUseTool/sandbox
  *   - env KEY NAMES only (no values)
@@ -111,8 +111,13 @@ function buildSanitizedQueryOptions(
 	if (typeof o.maxTurns === "number") out.maxTurns = o.maxTurns;
 	if (typeof o.outputFormat === "string") out.outputFormat = o.outputFormat;
 	if (typeof o.cwd === "string") out.cwd = o.cwd;
-	if (Array.isArray(o.allowedDirectories)) {
-		out.allowedDirectoryCount = (o.allowedDirectories as unknown[]).length;
+	// Per-directory Read grants are surfaced via the `Read(<dir>/**)` entries in
+	// allowedToolsPreview below; `additionalDirectories` is the only directory
+	// list actually passed to the SDK, so it's the one worth counting here.
+	if (Array.isArray(o.additionalDirectories)) {
+		out.additionalDirectoryCount = (
+			o.additionalDirectories as unknown[]
+		).length;
 	}
 	if (Array.isArray(o.settingSources)) {
 		out.settingSources = o.settingSources;
@@ -155,6 +160,16 @@ function buildSanitizedQueryOptions(
 	// tokens in query strings, etc.
 	if (o.mcpServers && typeof o.mcpServers === "object") {
 		out.mcpServerNames = Object.keys(o.mcpServers as object);
+	}
+
+	// Settings overrides — only the small handful we currently set. These are
+	// path/identifier values, not secrets, and surfacing them helps verify
+	// auto-memory routing in tests.
+	if (o.settings && typeof o.settings === "object") {
+		const settings = o.settings as Record<string, unknown>;
+		if (typeof settings.autoMemoryDirectory === "string") {
+			out.settingsAutoMemoryDirectory = settings.autoMemoryDirectory;
+		}
 	}
 
 	// Env — key names only, no values. Spreads `process.env`, so values are
@@ -684,8 +699,15 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					...(this.config.workingDirectory && {
 						cwd: this.config.workingDirectory,
 					}),
-					...(this.config.allowedDirectories && {
-						allowedDirectories: this.config.allowedDirectories,
+					// NOTE: there is no SDK `allowedDirectories` query option — the
+					// SDK only honors `additionalDirectories` (the `--add-dir`
+					// flag). `config.allowedDirectories` is consumed earlier to
+					// build `Read(<dir>/**)` tool grants + home-dir deny
+					// exclusions; it must NOT be forwarded here (the SDK would drop
+					// it). Use `additionalDirectories` for `--add-dir`, which also
+					// auto-loads each added dir's `.claude/skills/`.
+					...(this.config.additionalDirectories?.length && {
+						additionalDirectories: this.config.additionalDirectories,
 					}),
 					...(processedAllowedTools && { allowedTools: processedAllowedTools }),
 					...(processedDisallowedTools.length > 0 && {
@@ -700,9 +722,27 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					...(this.config.sessionStore && {
 						sessionStore: this.config.sessionStore,
 					}),
+					...(this.config.autoMemoryDirectory && {
+						settings: {
+							autoMemoryDirectory: this.config.autoMemoryDirectory,
+						},
+					}),
 					...(Object.keys(mcpServers).length > 0 && { mcpServers }),
+					// Only use MCP servers we explicitly pass via `mcpConfig` /
+					// `mcpServers`. The flag is undertyped in the SDK's TS
+					// definition (described as "strict validation") but Claude
+					// Code's `--strict-mcp-config` CLI help is unambiguous:
+					// "Only use MCP servers from --mcp-config, ignoring all
+					// other MCP configurations." That's the contract we want
+					// for hosted sessions — never silently inherit servers
+					// from the user's `~/.claude.json`, project `.mcp.json`,
+					// or other ambient sources.
+					strictMcpConfig: true,
 					...(this.config.hooks && { hooks: this.config.hooks }),
 					...(this.config.plugins?.length && { plugins: this.config.plugins }),
+					...(this.config.skills !== undefined && {
+						skills: this.config.skills,
+					}),
 					...(this.config.tools !== undefined && { tools: this.config.tools }),
 					...(this.config.maxTurns && { maxTurns: this.config.maxTurns }),
 					...(this.config.outputFormat && {

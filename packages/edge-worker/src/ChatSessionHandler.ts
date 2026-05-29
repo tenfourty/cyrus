@@ -61,6 +61,15 @@ export interface ChatSessionHandlerDeps {
 	runnerConfigBuilder: RunnerConfigBuilder;
 	/** Factory function that creates the appropriate runner based on config.defaultRunner */
 	createRunner: (config: AgentRunnerConfig) => IAgentRunner;
+	/**
+	 * Live read of the workspace-level custom-integration MCP config paths
+	 * for the chat platform this handler is bound to (e.g.
+	 * `config.slackMcpConfigs` for Slack). Chat sessions are repo-agnostic,
+	 * so `repository.mcpConfigPath` is not consulted; only this list
+	 * determines which custom `.mcp.json` files load. When empty/omitted,
+	 * no custom files load (native MCP servers still run as usual).
+	 */
+	getPlatformMcpConfigOverrides?: () => readonly string[] | undefined;
 	onWebhookStart: () => void;
 	onWebhookEnd: () => void;
 	onStateChange: () => Promise<void>;
@@ -320,6 +329,38 @@ export class ChatSessionHandler<TEvent> {
 	}
 
 	/**
+	 * Expose every active chat session this handler owns, so EdgeWorker
+	 * can resolve a cwd → session bundle from outside (e.g. the
+	 * `log_failure_mode` MCP tool needs to find a Slack/GitHub chat
+	 * session's runner session id). Chat sessions live in this handler's
+	 * dedicated AgentSessionManager — they aren't reachable from
+	 * EdgeWorker's primary AgentSessionManager.
+	 */
+	getAllChatSessions(): CyrusAgentSession[] {
+		return this.sessionManager.getAllSessions();
+	}
+
+	/**
+	 * Test/inspection: list all known thread keys and their session IDs.
+	 * Used by F1 to discover chat sessions for follow-up prompts and replay.
+	 */
+	listThreads(): Array<{ threadKey: string; sessionId: string }> {
+		return Array.from(this.threadSessions.entries()).map(
+			([threadKey, sessionId]) => ({ threadKey, sessionId }),
+		);
+	}
+
+	/**
+	 * Test/inspection: resolve a chat thread to its runner. Returns undefined
+	 * when the thread is unknown or the runner has been disposed.
+	 */
+	getRunnerForThread(threadKey: string): IAgentRunner | undefined {
+		const sessionId = this.threadSessions.get(threadKey);
+		if (!sessionId) return undefined;
+		return this.sessionManager.getAgentRunner(sessionId);
+	}
+
+	/**
 	 * Resume an existing session with a new prompt (--continue behavior).
 	 */
 	private async resumeSession(
@@ -482,9 +523,11 @@ export class ChatSessionHandler<TEvent> {
 			sessionId,
 			resumeSessionId,
 			cyrusHome: this.deps.cyrusHome,
+			platformName: this.adapter.platformName,
 			linearWorkspaceId: provider.getDefaultLinearWorkspaceId(),
 			repository: provider.getDefaultRepository(),
 			repositoryPaths: provider.getRepositoryPaths(),
+			platformMcpConfigOverrides: this.deps.getPlatformMcpConfigOverrides?.(),
 			logger: sessionLogger,
 			onMessage: (message: SDKMessage) =>
 				this.handleAgentMessage(sessionId, message),

@@ -94,11 +94,13 @@ function createAssistantToolUseMessage(
 		model: DEFAULT_CODEX_MODEL,
 		stop_reason: null,
 		stop_sequence: null,
+		stop_details: null,
 		usage: {
 			input_tokens: 0,
 			output_tokens: 0,
 			cache_creation_input_tokens: 0,
 			cache_read_input_tokens: 0,
+			output_tokens_details: null,
 			cache_creation: null,
 			inference_geo: null,
 			iterations: null,
@@ -108,6 +110,7 @@ function createAssistantToolUseMessage(
 		},
 		container: null,
 		context_management: null,
+		diagnostics: null,
 	};
 }
 
@@ -147,11 +150,13 @@ function createAssistantBetaMessage(
 		model: DEFAULT_CODEX_MODEL,
 		stop_reason: null,
 		stop_sequence: null,
+		stop_details: null,
 		usage: {
 			input_tokens: 0,
 			output_tokens: 0,
 			cache_creation_input_tokens: 0,
 			cache_read_input_tokens: 0,
+			output_tokens_details: null,
 			cache_creation: null,
 			inference_geo: null,
 			iterations: null,
@@ -161,6 +166,7 @@ function createAssistantBetaMessage(
 		},
 		container: null,
 		context_management: null,
+		diagnostics: null,
 	};
 }
 
@@ -186,6 +192,7 @@ function createResultUsage(parsed: ParsedUsage): SDKResultMessage["usage"] {
 		output_tokens: parsed.outputTokens,
 		cache_creation_input_tokens: 0,
 		cache_read_input_tokens: parsed.cachedInputTokens,
+		output_tokens_details: { thinking_tokens: 0 },
 		cache_creation: {
 			ephemeral_1h_input_tokens: 0,
 			ephemeral_5m_input_tokens: 0,

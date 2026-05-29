@@ -1,7 +1,36 @@
-import { access, mkdir, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SdkPluginConfig } from "cyrus-claude-runner";
 import type { ILogger } from "cyrus-core";
+
+/**
+ * Session context used to evaluate per-skill scope restrictions. Each dimension
+ * is optional — when omitted, scopes that depend on that dimension cannot match
+ * (e.g. a session with no `linearTeamId` will not see skills scoped to a team).
+ */
+export interface SkillSessionContext {
+	repositoryId?: string;
+	linearTeamId?: string;
+	linearLabelIds?: string[];
+	/**
+	 * Working-tree paths of the repositories participating in this session.
+	 * Each repo's `<repoPath>/.claude/skills/*` directory names are unioned into
+	 * the resolved skill whitelist so a repo can ship its own skills. Carries one
+	 * path for single-repo / GitHub-mention sessions and every participating
+	 * worktree for multi-repo sessions.
+	 */
+	repoPaths?: string[];
+}
+
+/**
+ * Scope persisted alongside a user skill as `scope.json`. Mirrors the optional
+ * fields on `UpdateSkillPayload` in `cyrus-config-updater`.
+ */
+interface SkillScope {
+	repositoryIds?: string[];
+	linearTeamIds?: string[];
+	linearLabelIds?: string[];
+}
 
 /**
  * Resolves skills plugins for agent sessions.
@@ -31,16 +60,30 @@ export class SkillsPluginResolver {
 	}
 
 	/**
-	 * Ensure the user skills plugin directory is properly initialized.
-	 * Call once during EdgeWorker startup — NOT on every session.
+	 * Ensure the user-skills plugin layout exists on disk.
+	 *
+	 * Called from EdgeWorker startup — idempotent check-and-create so the
+	 * plugin is always ready before the first skill is synced, mirroring the
+	 * pattern used for other Cyrus-managed directories (repos, worktrees,
+	 * mcp-configs in `Application.ensureRequiredDirectories()`).
+	 *
+	 * Creates, if missing:
+	 *   ~/.cyrus/user-skills-plugin/
+	 *   ~/.cyrus/user-skills-plugin/skills/
+	 *   ~/.cyrus/user-skills-plugin/.claude-plugin/plugin.json
+	 *
+	 * The manifest file is what the Claude Agent SDK uses to identify the
+	 * directory as a plugin — without it, even a populated `skills/` tree is
+	 * silently ignored by the SDK's plugin loader.
 	 *
 	 * Separated from resolve() to maintain Command-Query Separation:
 	 * this method writes to the filesystem, resolve() only reads.
 	 */
 	async ensureUserPluginScaffolded(): Promise<void> {
-		if (!(await this.exists(this.userSkillsDir))) {
-			return;
-		}
+		// Always ensure the skills directory exists — handlers/skills.ts also
+		// mkdir's it recursively per-skill, but creating it eagerly here means
+		// the layout is consistent even before the first sync.
+		await mkdir(this.userSkillsDir, { recursive: true });
 
 		const manifestDir = join(this.userPluginPath, ".claude-plugin");
 		const manifestPath = join(manifestDir, "plugin.json");
@@ -61,7 +104,7 @@ export class SkillsPluginResolver {
 			),
 		);
 		this.logger.info(
-			`Auto-scaffolded user skills plugin manifest at ${manifestPath}`,
+			`Scaffolded user-skills plugin manifest at ${manifestPath}`,
 		);
 	}
 
@@ -93,30 +136,180 @@ export class SkillsPluginResolver {
 	}
 
 	/**
-	 * Discover all available skill names from the given plugin configs.
+	 * Discover all available skill names from the given plugin configs,
+	 * optionally filtered by per-skill scope sidecars (scope.json) using the
+	 * provided session context.
 	 *
 	 * Reads the `skills/` subdirectory of each plugin path and returns
 	 * deduplicated skill names (user skills shadow internal ones due to
 	 * insertion order of the Set).
+	 *
+	 * Filtering rules:
+	 * - A skill with no `scope.json` (or an empty scope) is always available.
+	 * - A skill with a populated scope is available only when every populated
+	 *   dimension matches the session context (AND across dimensions, OR
+	 *   within each list).
+	 * - When `context` is omitted, no filtering is applied (all skills returned).
+	 *
+	 * Repo-local skills: when `context.repoPaths` is provided, each
+	 * `<repoPath>/.claude/skills/*` directory name is also unioned in. These are
+	 * implicitly scoped to the repository by virtue of living in it, so the
+	 * `scope.json` filter is NOT applied to them. They are appended after the
+	 * plugin skills, so a plugin skill of the same name takes precedence in the
+	 * (display-order-sensitive) dedup.
 	 */
-	async discoverSkillNames(plugins: SdkPluginConfig[]): Promise<string[]> {
+	async discoverSkillNames(
+		plugins: SdkPluginConfig[],
+		context?: SkillSessionContext,
+	): Promise<string[]> {
 		const skillNames: string[] = [];
 
 		for (const plugin of plugins) {
 			const skillsDir = join(plugin.path, "skills");
-			try {
-				const entries = await readdir(skillsDir, { withFileTypes: true });
-				for (const entry of entries) {
-					if (entry.isDirectory() || entry.isSymbolicLink()) {
-						skillNames.push(entry.name);
+			const entries = await this.readSkillDirEntries(skillsDir);
+
+			for (const entry of entries) {
+				if (context) {
+					const scope = await this.loadSkillScope(skillsDir, entry);
+					if (!this.scopeMatches(scope, context)) {
+						this.logger.debug(
+							`Skill "${entry}" excluded by scope filter for current session`,
+						);
+						continue;
 					}
 				}
-			} catch {
-				// Plugin directory doesn't exist or isn't readable — skip
+
+				skillNames.push(entry);
+			}
+		}
+
+		// Union repo-local skills shipped in each participating repo's working
+		// tree. No scope.json filtering — presence in the repo is the scope.
+		for (const repoPath of context?.repoPaths ?? []) {
+			const skillsDir = join(repoPath, ".claude", "skills");
+			const entries = await this.readSkillDirEntries(skillsDir);
+			for (const entry of entries) {
+				skillNames.push(entry);
 			}
 		}
 
 		return [...new Set(skillNames)];
+	}
+
+	/**
+	 * Read the immediate subdirectory (and symlink) names of a `skills/`
+	 * directory. Returns an empty array when the directory is missing or
+	 * unreadable, so callers can treat "no skills dir" as a no-op.
+	 */
+	private async readSkillDirEntries(skillsDir: string): Promise<string[]> {
+		try {
+			const entries = await readdir(skillsDir, { withFileTypes: true });
+			return entries
+				.filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+				.map((entry) => entry.name);
+		} catch {
+			// Directory doesn't exist or isn't readable — skip
+			return [];
+		}
+	}
+
+	/**
+	 * Read a skill's `scope.json` sidecar if present. Returns `null` when the
+	 * sidecar is absent, empty, or unparseable — all of which mean "no scope
+	 * restriction" (global skill).
+	 */
+	private async loadSkillScope(
+		skillsDir: string,
+		skillName: string,
+	): Promise<SkillScope | null> {
+		const scopePath = join(skillsDir, skillName, "scope.json");
+		let raw: string;
+		try {
+			raw = await readFile(scopePath, "utf-8");
+		} catch {
+			return null;
+		}
+
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (!parsed || typeof parsed !== "object") {
+				return null;
+			}
+			const obj = parsed as Record<string, unknown>;
+			const cleanList = (value: unknown): string[] | undefined => {
+				if (!Array.isArray(value)) return undefined;
+				const filtered = value.filter(
+					(v): v is string => typeof v === "string" && v.length > 0,
+				);
+				return filtered.length > 0 ? filtered : undefined;
+			};
+			const scope: SkillScope = {};
+			const repos = cleanList(obj.repositoryIds);
+			const teams = cleanList(obj.linearTeamIds);
+			const labels = cleanList(obj.linearLabelIds);
+			if (repos) scope.repositoryIds = repos;
+			if (teams) scope.linearTeamIds = teams;
+			if (labels) scope.linearLabelIds = labels;
+			if (
+				!scope.repositoryIds &&
+				!scope.linearTeamIds &&
+				!scope.linearLabelIds
+			) {
+				return null;
+			}
+			return scope;
+		} catch (error) {
+			this.logger.warn(
+				`Failed to parse scope.json for skill "${skillName}" — treating as global`,
+				{ error: error instanceof Error ? error.message : String(error) },
+			);
+			return null;
+		}
+	}
+
+	/**
+	 * Evaluate scope against session context.
+	 *
+	 * A null/empty scope always matches. Otherwise every populated dimension
+	 * on the scope must be satisfied by the session context (AND), where each
+	 * dimension is satisfied when the context value is included in the
+	 * configured list (OR within the dimension).
+	 */
+	private scopeMatches(
+		scope: SkillScope | null,
+		context: SkillSessionContext,
+	): boolean {
+		if (!scope) return true;
+
+		if (scope.repositoryIds) {
+			if (
+				!context.repositoryId ||
+				!scope.repositoryIds.includes(context.repositoryId)
+			) {
+				return false;
+			}
+		}
+
+		if (scope.linearTeamIds) {
+			if (
+				!context.linearTeamId ||
+				!scope.linearTeamIds.includes(context.linearTeamId)
+			) {
+				return false;
+			}
+		}
+
+		if (scope.linearLabelIds) {
+			const sessionLabels = context.linearLabelIds ?? [];
+			if (
+				sessionLabels.length === 0 ||
+				!scope.linearLabelIds.some((id) => sessionLabels.includes(id))
+			) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -128,9 +321,15 @@ export class SkillsPluginResolver {
 	 * Accepts pre-resolved plugins to avoid redundant filesystem access
 	 * when resolve() is also called separately for the runner config.
 	 */
-	async buildSkillsGuidance(plugins?: SdkPluginConfig[]): Promise<string> {
+	async buildSkillsGuidance(
+		plugins?: SdkPluginConfig[],
+		context?: SkillSessionContext,
+	): Promise<string> {
 		const resolvedPlugins = plugins ?? (await this.resolve());
-		const availableSkills = await this.discoverSkillNames(resolvedPlugins);
+		const availableSkills = await this.discoverSkillNames(
+			resolvedPlugins,
+			context,
+		);
 
 		if (availableSkills.length === 0) {
 			return "";

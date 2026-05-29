@@ -111,6 +111,7 @@ function createAssistantToolUseMessage(
 		model: "cursor-agent",
 		stop_reason: null,
 		stop_sequence: null,
+		stop_details: null,
 		usage: {
 			input_tokens: 0,
 			output_tokens: 0,
@@ -120,6 +121,7 @@ function createAssistantToolUseMessage(
 		} as SDKAssistantMessage["message"]["usage"],
 		container: null,
 		context_management: null,
+		diagnostics: null,
 	};
 }
 
@@ -139,6 +141,7 @@ function createAssistantTextMessage(
 		model: "cursor-agent",
 		stop_reason: null,
 		stop_sequence: null,
+		stop_details: null,
 		usage: {
 			input_tokens: 0,
 			output_tokens: 0,
@@ -148,6 +151,7 @@ function createAssistantTextMessage(
 		} as SDKAssistantMessage["message"]["usage"],
 		container: null,
 		context_management: null,
+		diagnostics: null,
 	};
 }
 
