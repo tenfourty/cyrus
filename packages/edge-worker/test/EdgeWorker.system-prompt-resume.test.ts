@@ -229,6 +229,7 @@ Issue: {{issue_identifier}}`;
 			}),
 			getIssueLabels: vi.fn().mockResolvedValue([{ name: "bug" }]),
 			getClient: vi.fn().mockReturnValue({}),
+			notifyTurnStarted: vi.fn(),
 		};
 		(edgeWorker as any).issueTrackers.set(
 			mockRepository.linearWorkspaceId,
