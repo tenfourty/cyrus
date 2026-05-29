@@ -181,6 +181,7 @@ describe("EdgeWorker - Missing Session/Repository Recovery (CYPACK-852)", () => 
 				team: { id: "test-workspace", key: "TEST", name: "Test Team" },
 			}),
 			fetchComment: vi.fn().mockResolvedValue(null),
+			notifyTurnStarted: vi.fn(),
 		};
 		(edgeWorker as any).issueTrackers.set("test-workspace", mockIssueTracker);
 	});
