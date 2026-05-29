@@ -199,6 +199,7 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 				workspace: { path: "/test/workspaces/TEST-123" },
 			}),
 			isStopRequested: vi.fn().mockReturnValue(false),
+			markSessionResuming: vi.fn(),
 			addAgentRunner: vi.fn(),
 			getAllAgentRunners: vi.fn().mockReturnValue([]),
 			serializeState: vi.fn().mockReturnValue({ sessions: {}, entries: {} }),
