@@ -203,6 +203,18 @@ export class WorkerService {
 				version: this.version,
 				ngrokAuthToken,
 			}),
+			// LINEAR_ALLOWED_TOOLS env override (upstream addition).
+			// `buildEdgeWorkerConfig` carries `edgeConfig.linearAllowedTools` through
+			// its `...edgeConfig` spread; this layer enforces env-over-config
+			// precedence the same way DISALLOWED_TOOLS / CYRUS_*_MODEL are handled
+			// inside the helper.
+			...(process.env.LINEAR_ALLOWED_TOOLS
+				? {
+						linearAllowedTools: process.env.LINEAR_ALLOWED_TOOLS.split(",").map(
+							(t) => t.trim(),
+						),
+					}
+				: {}),
 			handlers: {
 				createWorkspace: async (
 					issue: Issue,

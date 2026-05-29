@@ -62,6 +62,15 @@ export type {
 	SDKResultMessage,
 	SDKUserMessage,
 } from "./agent-runner-types.js";
+// Per-platform default allowed tools — single source of truth for cyrus-hosted
+// and self-host configurations alike.
+export type { AllowedToolsPlatform } from "./allowed-tools-defaults.js";
+export {
+	GITHUB_DEFAULT_ALLOWED_TOOLS,
+	getDefaultAllowedTools,
+	LINEAR_DEFAULT_ALLOWED_TOOLS,
+	SLACK_DEFAULT_ALLOWED_TOOLS,
+} from "./allowed-tools-defaults.js";
 export type {
 	BaseBranchResolution,
 	CyrusAgentSession,
@@ -71,7 +80,6 @@ export type {
 	RepositoryContext,
 	Workspace,
 } from "./CyrusAgentSession.js";
-
 // Configuration types
 export type {
 	EdgeConfig,
@@ -104,7 +112,6 @@ export {
 	UserAccessControlConfigSchema,
 	UserIdentifierSchema,
 } from "./config-types.js";
-
 // Constants
 export {
 	DEFAULT_BASE_BRANCH,

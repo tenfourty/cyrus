@@ -61,10 +61,16 @@ export class McpConfigService {
 	/**
 	 * Build MCP configuration with automatic Linear server injection and cyrus-tools over Fastify MCP.
 	 * Workspace-level servers (Linear, cyrus-tools, Slack) are configured once using workspace-level token.
+	 *
+	 * Whether the agent can actually CALL into any of these servers is gated
+	 * by the per-platform allowed-tools array (`teams.{linear,slack,github}_allowed_tools`),
+	 * not by anything done here — so it's safe to always spin them up when
+	 * their underlying transport credentials exist (Slack inline via
+	 * `SLACK_BOT_TOKEN`, Linear via the workspace's Linear token, etc.).
+	 *
 	 * @param repoId - Repository ID for MCP context scoping
 	 * @param linearWorkspaceId - Linear workspace ID (from webhook.organizationId or repo config)
 	 * @param parentSessionId - Parent session ID for cyrus-tools context
-	 * @param options.excludeSlackMcp - When true, excludes the Slack MCP server even if SLACK_BOT_TOKEN is set
 	 */
 	async buildMcpConfig(
 		repoId: string,
