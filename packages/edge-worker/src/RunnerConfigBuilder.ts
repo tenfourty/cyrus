@@ -804,18 +804,26 @@ export function inspectGitGuardrail(cwd: string, log: ILogger): string | null {
 
 	let unpushedCount = 0;
 	try {
-		unpushedCount = parseInt(runGit("rev-list --count @{u}..HEAD"), 10) || 0;
-	} catch {
-		// No upstream configured — fall back to comparing against origin's default branch.
-		try {
-			const baseRef = runGit("rev-parse --verify --abbrev-ref origin/HEAD");
-			if (baseRef) {
-				unpushedCount =
-					parseInt(runGit(`rev-list --count ${baseRef}..HEAD`), 10) || 0;
-			}
-		} catch {
-			// Can't determine a base — be conservative and don't block on commits alone.
+		// Count commits reachable from HEAD that are present on NO remote-tracking
+		// ref. This is the only measure that matches the guardrail's claim ("not
+		// yet on the remote"). Comparing against @{u} or origin/HEAD measured
+		// "ahead of upstream/base" instead — which wrongly flagged a fully-pushed
+		// feature branch whose upstream happens to track origin/main (a very
+		// common state: branched while tracking main, or pushed without -u to its
+		// own ref). The whole branch then read as "unpushed", firing the guardrail
+		// on every session and driving a comment storm on busy MRs
+		// (cove-deploy!24, 2026-06-04). Being ahead of the base branch is the
+		// normal state of every open PR/MR and must pass cleanly.
+		const hasRemoteRefs =
+			runGit("for-each-ref --count=1 refs/remotes").length > 0;
+		if (hasRemoteRefs) {
+			unpushedCount =
+				parseInt(runGit("rev-list --count HEAD --not --remotes"), 10) || 0;
 		}
+		// No remote-tracking refs at all — can't determine remote state, so be
+		// conservative and don't block on commits alone.
+	} catch {
+		// git unavailable or failed unexpectedly — don't block on commits.
 	}
 
 	if (!hasUncommitted && unpushedCount === 0) {

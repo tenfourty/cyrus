@@ -4,8 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-
-
 ### Changed
 - **Routing-context prompt now surfaces `<sibling_participants>` and clarifies single-repo tag scope** — In multi-repo workspaces, the `<repository_routing_context>` block (consumed by both Linear orchestrator sessions and the Slack `@`-mention adapter) now lists each repo's declared `siblingParticipants` so the agent can see what auto-expansion is configured. The description also makes explicit that a single-repo description tag like `[repo=A]` is a hard scope-down (mounts only A even when A has declared siblings), and recommends either omitting the tag — letting label/team/project routing fire and auto-expand siblings — or using the comma form `[repo=A,B]` when work genuinely spans multiple repos. The Slack adapter's orchestration notes were rewritten accordingly. Fixes a class of misroutings where a Slack-originated issue creation picked a confident single-repo tag and produced sessions scoped too narrowly to read sibling repos, surfacing as benign-but-noisy permission denials in `providerExtras.permissionDenials`.
 
@@ -14,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - **Post-response activity guard for Linear sessions** — Cyrus now tracks per-session "turn closed" state in the Linear tracker. When a `response` or `error` activity is posted, any subsequent `thought`/`action`/`elicitation` activity for the same session before the next user prompt arrives logs a warning ("Linear will demote session state from 'complete' back to 'active', pinning the UI as 'still working'"). Warn-only — activities still post — so the operator can grep journalctl and identify the offending code path. Reset automatically on the next prompted-webhook arrival for the session.
 
 ### Fixed
+- The end-of-session guardrail no longer falsely tells the agent it has "N commits not yet on the remote" when a branch is fully pushed to its own remote ref but its upstream happens to track the base branch (e.g. `origin/main`). The guardrail now only flags commits that exist on no remote at all, so an open PR/MR that is ahead of its base branch passes cleanly instead of triggering a stream of "false positive" comments.
 - **Linear session pinned as "still working" after the agent already responded** — A trailing telemetry "Session totals" thought activity was being posted after every result-message turn (intended as an end-of-session summary, but Cyrus's per-turn `completeSession` model meant it fired on the first turn of every session). Linear infers session state from the LAST activity's `type` — posting any `thought` after a `response` demoted state from `complete` back to `active`, which kept the Linear UI showing the session as still working indefinitely. Removed the trailing rollup activity entirely; per-turn economics still surface via the inline footer on the `response` activity and the NDJSON store. The `telemetry.linearRollup` config field is removed; existing configs that set it are silently ignored (Zod strips unknown keys, no migration needed).
 
 ### Fixed
