@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- The end-of-session guardrail no longer falsely tells the agent it has "N commits not yet on the remote" when a branch is fully pushed to its own remote ref but its upstream happens to track the base branch (e.g. `origin/main`). The guardrail now only flags commits that exist on no remote at all, so an open PR/MR that is ahead of its base branch passes cleanly instead of triggering a stream of "false positive" comments.
 
 ## [0.2.67] - 2026-07-25
 
