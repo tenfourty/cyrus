@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- The end-of-session guardrail no longer falsely tells the agent it has "N commits not yet on the remote" when a branch is fully pushed to its own remote ref but its upstream happens to track the base branch (e.g. `origin/main`). The guardrail now only flags commits that exist on no remote at all, so an open PR/MR that is ahead of its base branch passes cleanly instead of triggering a stream of "false positive" comments.
+
 ### Added
 - A repository can now ship its own skills: any skill directories under `<repo>/.claude/skills/` are automatically discovered and made available to the agent whenever Cyrus works in that repo — for single-repo issues, multi-repo issues (skills from every participating repo are combined), and GitHub/GitLab mentions alike. ([CYPACK-1261](https://linear.app/ceedar/issue/CYPACK-1261), [#1268](https://github.com/cyrusagents/cyrus/pull/1268))
 

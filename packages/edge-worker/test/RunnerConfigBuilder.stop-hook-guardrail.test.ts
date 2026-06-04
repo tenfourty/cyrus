@@ -250,4 +250,48 @@ describe("inspectGitGuardrail", () => {
 			rmSync(remote, { recursive: true, force: true });
 		}
 	});
+
+	it("returns null when the branch is fully pushed to its own remote ref but @{u} tracks origin/main", () => {
+		// repoDeploy!24 storm (2026-06-04): a feature branch whose upstream
+		// tracking ref is origin/main (a common state — branched while tracking
+		// main, or pushed without -u) but whose own remote branch is up to date.
+		// `@{u}..HEAD` reported the whole branch as "unpushed", firing the
+		// guardrail on every session and driving a comment amplifier. A branch
+		// whose commits all live on its own remote ref must not block.
+		const remote = mkdtempSync(join(tmpdir(), "cyrus-stop-hook-remote-"));
+		try {
+			execSync(`git init --bare`, { cwd: remote, stdio: "ignore" });
+			git(workdir, "init -b main");
+			git(workdir, `remote add origin ${remote}`);
+			writeFileSync(join(workdir, "README.md"), "hello\n");
+			git(workdir, "add README.md");
+			git(workdir, 'commit -m "init"');
+			git(workdir, "push -u origin main");
+
+			// Create a feature branch and add three commits ahead of main.
+			git(workdir, "checkout -b feature");
+			for (const n of [1, 2, 3]) {
+				writeFileSync(join(workdir, `f${n}.txt`), `feature ${n}\n`);
+				git(workdir, `add f${n}.txt`);
+				git(workdir, `commit -m "feature ${n}"`);
+			}
+			// Push the branch to its OWN remote ref, then point its upstream at
+			// origin/main — reproducing the incident's @{u} state exactly.
+			git(workdir, "push origin feature");
+			git(workdir, "branch --set-upstream-to=origin/main feature");
+
+			// Sanity: this is the buggy input — @{u}..HEAD is 3, but the branch
+			// is fully present on its own remote ref (origin/feature).
+			expect(
+				execSync("git rev-list --count @{u}..HEAD", {
+					cwd: workdir,
+					encoding: "utf8",
+				}).trim(),
+			).toBe("3");
+
+			expect(inspectGitGuardrail(workdir, silentLogger)).toBeNull();
+		} finally {
+			rmSync(remote, { recursive: true, force: true });
+		}
+	});
 });
