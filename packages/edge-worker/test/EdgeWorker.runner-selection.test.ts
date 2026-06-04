@@ -44,10 +44,12 @@ vi.mock("cyrus-core", async (importOriginal) => {
 		...actual,
 		isAgentSessionCreatedWebhook: vi.fn(),
 		isAgentSessionPromptedWebhook: vi.fn(),
-		PersistenceManager: vi.fn().mockImplementation(() => ({
-			loadEdgeWorkerState: vi.fn().mockResolvedValue(null),
-			saveEdgeWorkerState: vi.fn().mockResolvedValue(undefined),
-		})),
+		PersistenceManager: vi.fn().mockImplementation(function () {
+			return {
+				loadEdgeWorkerState: vi.fn().mockResolvedValue(null),
+				saveEdgeWorkerState: vi.fn().mockResolvedValue(undefined),
+			};
+		}),
 	};
 });
 vi.mock("file-type");
@@ -118,7 +120,9 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			comments: vi.fn().mockResolvedValue({ nodes: [] }),
 			rawRequest: vi.fn(),
 		};
-		vi.mocked(LinearClient).mockImplementation(() => mockLinearClient);
+		vi.mocked(LinearClient).mockImplementation(function () {
+			return mockLinearClient;
+		});
 
 		// Mock ClaudeRunner
 		mockClaudeRunner = {
@@ -132,7 +136,7 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			addStreamMessage: vi.fn(),
 			updatePromptVersions: vi.fn(),
 		};
-		vi.mocked(ClaudeRunner).mockImplementation((config: any) => {
+		vi.mocked(ClaudeRunner).mockImplementation(function (config: any) {
 			capturedRunnerType = "claude";
 			capturedRunnerConfig = config;
 			return mockClaudeRunner;
@@ -150,7 +154,7 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			addStreamMessage: vi.fn(),
 			updatePromptVersions: vi.fn(),
 		};
-		vi.mocked(GeminiRunner).mockImplementation((config: any) => {
+		vi.mocked(GeminiRunner).mockImplementation(function (config: any) {
 			capturedRunnerType = "gemini";
 			capturedRunnerConfig = config;
 			return mockGeminiRunner;
@@ -168,7 +172,7 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			addStreamMessage: vi.fn(),
 			updatePromptVersions: vi.fn(),
 		};
-		vi.mocked(CodexRunner).mockImplementation((config: any) => {
+		vi.mocked(CodexRunner).mockImplementation(function (config: any) {
 			capturedRunnerType = "codex";
 			capturedRunnerConfig = config;
 			return mockCodexRunner;
@@ -186,7 +190,7 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 			addStreamMessage: vi.fn(),
 			updatePromptVersions: vi.fn(),
 		};
-		vi.mocked(CursorRunner).mockImplementation((config: any) => {
+		vi.mocked(CursorRunner).mockImplementation(function (config: any) {
 			capturedRunnerType = "cursor";
 			capturedRunnerConfig = config;
 			return mockCursorRunner;
@@ -205,28 +209,24 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 		);
 
 		// Mock SharedApplicationServer
-		vi.mocked(SharedApplicationServer).mockImplementation(
-			() =>
-				({
-					start: vi.fn().mockResolvedValue(undefined),
-					stop: vi.fn().mockResolvedValue(undefined),
-					getFastifyInstance: vi.fn().mockReturnValue({ post: vi.fn() }),
-					getWebhookUrl: vi
-						.fn()
-						.mockReturnValue("http://localhost:3456/webhook"),
-					registerOAuthCallbackHandler: vi.fn(),
-				}) as any,
-		);
+		vi.mocked(SharedApplicationServer).mockImplementation(function () {
+			return {
+				start: vi.fn().mockResolvedValue(undefined),
+				stop: vi.fn().mockResolvedValue(undefined),
+				getFastifyInstance: vi.fn().mockReturnValue({ post: vi.fn() }),
+				getWebhookUrl: vi.fn().mockReturnValue("http://localhost:3456/webhook"),
+				registerOAuthCallbackHandler: vi.fn(),
+			};
+		} as any);
 
 		// Mock LinearEventTransport
-		vi.mocked(LinearEventTransport).mockImplementation(
-			() =>
-				({
-					register: vi.fn(),
-					on: vi.fn(),
-					removeAllListeners: vi.fn(),
-				}) as any,
-		);
+		vi.mocked(LinearEventTransport).mockImplementation(function () {
+			return {
+				register: vi.fn(),
+				on: vi.fn(),
+				removeAllListeners: vi.fn(),
+			};
+		} as any);
 
 		// Mock type guards
 		vi.mocked(isAgentSessionCreatedWebhook).mockReturnValue(true);
@@ -485,6 +485,34 @@ Issue: {{issue_identifier}}`;
 			expect(capturedRunnerType).toBe("codex");
 			expect(CodexRunner).toHaveBeenCalled();
 			expect(capturedRunnerConfig.model).toBe("gpt-5.2-codex");
+		});
+
+		it("should select Codex runner with gpt-5.5 model when 'gpt-5.5' label is present", async () => {
+			const mockIssue = createMockIssueWithLabels(["gpt-5.5"]);
+			mockLinearClient.issue.mockResolvedValue(mockIssue);
+
+			const webhook: LinearAgentSessionCreatedWebhook = {
+				type: "Issue",
+				action: "agentSessionCreated",
+				organizationId: "test-workspace",
+				agentSession: {
+					id: "agent-session-123",
+					issue: {
+						id: "issue-123",
+						identifier: "TEST-123",
+						team: { key: "TEST" },
+					},
+					comment: { body: "@cyrus work on this" },
+				},
+			};
+
+			await (edgeWorker as any).handleAgentSessionCreatedWebhook(webhook, [
+				mockRepository,
+			]);
+
+			expect(capturedRunnerType).toBe("codex");
+			expect(CodexRunner).toHaveBeenCalled();
+			expect(capturedRunnerConfig.model).toBe("gpt-5.5");
 		});
 	});
 

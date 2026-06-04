@@ -1335,6 +1335,24 @@ export class EdgeWorker extends EventEmitter {
 	}
 
 	/**
+	 * Whether Cyrus should follow plain replies in a Slack thread it was
+	 * @mentioned in. Enabled by default; controlled by the per-team
+	 * `slackThreadFollowing` config toggle (Behaviours page) and force-disabled
+	 * by the `CYRUS_SLACK_THREAD_FOLLOWING_DISABLED` env kill-switch, which takes
+	 * precedence over the toggle. When disabled, only @mentions are processed.
+	 */
+	private isSlackThreadFollowingEnabled(): boolean {
+		const envValue = (process.env.CYRUS_SLACK_THREAD_FOLLOWING_DISABLED ?? "")
+			.toLowerCase()
+			.trim();
+		if (envValue === "true" || envValue === "1" || envValue === "yes") {
+			return false;
+		}
+		// Config toggle defaults to enabled when unset.
+		return this.config.slackThreadFollowing !== false;
+	}
+
+	/**
 	 * Register the Slack event transport for receiving forwarded Slack webhooks from CYHOST.
 	 * This creates a /slack-webhook endpoint that handles @mention events from Slack.
 	 */
@@ -1347,10 +1365,18 @@ export class EdgeWorker extends EventEmitter {
 
 		const routingContext =
 			this.promptBuilder.generateRoutingContextForAllWorkspaces();
+		// Only managed teams (cloud or self-hosted, paired with cyrus-hosted)
+		// have a Behaviours page where automatic Slack thread listening can be
+		// turned off — CYRUS_API_KEY is proof of that pairing, so the
+		// stop-listening prompt guidance is gated on it. Community members
+		// don't have the key (or the page).
+		const cyrusAppBaseUrl = process.env.CYRUS_API_KEY
+			? getCyrusAppUrl()
+			: undefined;
 		const slackAdapter = new SlackChatAdapter(
 			chatRepositoryProvider,
 			this.logger,
-			{ repositoryRoutingContext: routingContext },
+			{ repositoryRoutingContext: routingContext, cyrusAppBaseUrl },
 		);
 
 		if (
@@ -1412,6 +1438,9 @@ export class EdgeWorker extends EventEmitter {
 			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
 			verificationMode: slackVerificationMode,
 			secret: slackSecret,
+			// Live read so the per-team toggle (hot-reloaded via config) and the
+			// env kill-switch both take effect without rebuilding the transport.
+			isThreadFollowingEnabled: () => this.isSlackThreadFollowingEnabled(),
 		});
 
 		this.slackEventTransport.on("event", (event: SlackWebhookEvent) => {
@@ -1533,6 +1562,16 @@ export class EdgeWorker extends EventEmitter {
 					);
 					return;
 				}
+			}
+
+			// Honor the PR-review trigger toggle: when disabled, ignore
+			// pull_request_review events entirely — no acknowledgement comment and
+			// no agent session. Defaults to enabled when the flag is unset.
+			if (isPullRequestReview && this.config.prReviewTrigger === false) {
+				this.logger.debug(
+					`PR review trigger is disabled, ignoring pull_request_review on ${repoFullName}#${prNumber}`,
+				);
+				return;
 			}
 
 			// Mention-required filter (independent of self-skip). Opt-in via
