@@ -135,6 +135,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});
@@ -171,6 +174,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});
@@ -207,6 +213,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});

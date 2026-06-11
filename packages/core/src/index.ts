@@ -30,6 +30,7 @@ export { createLogger, LogLevel } from "./logging/index.js";
 // Agent Runner types
 export type {
 	AgentMessage,
+	AgentPendingWork,
 	AgentRunnerConfig,
 	AgentSessionInfo,
 	AgentUserMessage,
@@ -38,6 +39,7 @@ export type {
 	AskUserQuestionInput,
 	AskUserQuestionOption,
 	AskUserQuestionResult,
+	BackgroundTaskSummary,
 	HookCallbackMatcher,
 	HookEvent,
 	IAgentRunner,
@@ -49,6 +51,7 @@ export type {
 	SDKMessage,
 	SDKResultMessage,
 	SDKUserMessage,
+	SessionCronSummary,
 } from "./agent-runner-types.js";
 // Per-platform default allowed tools — single source of truth for cyrus-hosted
 // and self-host configurations alike.
