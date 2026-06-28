@@ -204,9 +204,9 @@ describe("EdgeWorker - Runner Selection Based on Labels", () => {
 				workspace: { path: "/test/workspaces/TEST-123" },
 			}),
 		});
-		vi.mocked(AgentSessionManager).mockImplementation(
-			() => mockAgentSessionManager,
-		);
+		vi.mocked(AgentSessionManager).mockImplementation(function () {
+			return mockAgentSessionManager;
+		} as any);
 
 		// Mock SharedApplicationServer
 		vi.mocked(SharedApplicationServer).mockImplementation(function () {

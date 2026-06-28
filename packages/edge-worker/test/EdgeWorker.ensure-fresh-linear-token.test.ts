@@ -5,12 +5,14 @@ import { EdgeWorker } from "../src/EdgeWorker.js";
 
 vi.mock("@linear/sdk");
 vi.mock("../src/SharedApplicationServer.js", () => ({
-	SharedApplicationServer: vi.fn().mockImplementation(() => ({
-		start: vi.fn(),
-		registerLinearEventTransport: vi.fn(),
-		registerConfigUpdater: vi.fn(),
-		registerOAuthCallback: vi.fn(),
-	})),
+	SharedApplicationServer: vi.fn().mockImplementation(function () {
+		return {
+			start: vi.fn(),
+			registerLinearEventTransport: vi.fn(),
+			registerConfigUpdater: vi.fn(),
+			registerOAuthCallback: vi.fn(),
+		};
+	}),
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -61,7 +63,9 @@ describe("EdgeWorker.ensureFreshLinearToken", () => {
 			issue: vi.fn(),
 			client: { request: vi.fn(), setHeader: vi.fn() },
 		};
-		vi.mocked(LinearClient).mockImplementation(() => mockLinearClient);
+		vi.mocked(LinearClient).mockImplementation(function () {
+			return mockLinearClient;
+		} as any);
 	});
 
 	it("proactively refreshes when the stored token has expired", async () => {

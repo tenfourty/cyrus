@@ -11,6 +11,7 @@ import type {
 	SDKUserMessage,
 } from "cyrus-claude-runner";
 import {
+	type AgentPendingWork,
 	AgentSessionStatus,
 	AgentSessionType,
 	type CyrusAgentSession,
@@ -26,6 +27,11 @@ import {
 	type SerializedCyrusAgentSessionEntry,
 	type Workspace,
 } from "cyrus-core";
+import {
+	formatPendingWorkThought,
+	formatScheduleWakeupResponse,
+	tryParseScheduleWakeupInput,
+} from "./PendingWorkFormatter.js";
 import type {
 	ActivityPostOptions,
 	ActivitySignal,
@@ -108,6 +114,8 @@ export class AgentSessionManager extends EventEmitter {
 	private toolCallsByToolUseId: Map<string, { name: string; input: any }> =
 		new Map(); // Track tool calls by their tool_use_id
 	private lastAssistantBodyBySession: Map<string, string> = new Map(); // Buffer: last assistant text per session for posting as response on result
+	private lastAssistantBodyIsToolInputBySession: Map<string, boolean> =
+		new Map(); // Whether the buffered body above is a tool_use input JSON (no trailing assistant text) — guards against posting raw JSON as the "response" (CYPACK-1177)
 	private bufferedAssistantEntryBySession: Map<string, CyrusAgentSessionEntry> =
 		new Map(); // One-behind buffer: holds last assistant entry until next message or result
 	private taskSubjectsByToolUseId: Map<string, string> = new Map(); // Cache TaskCreate subjects by toolUseId until result arrives with task ID
@@ -487,6 +495,25 @@ export class AgentSessionManager extends EventEmitter {
 		// Post final result to issue tracker
 		await this.addResultEntry(sessionId, resultMessage);
 
+		// When the turn ended with work still scheduled or in flight
+		// (ScheduleWakeup/cron timers, backgrounded tasks), the runner holds
+		// its session open and the wakeup will stream new messages in later.
+		// Post a thought AFTER the response so Linear's agent panel returns
+		// to its working state and the user can see what the session is
+		// waiting on.
+		if (resultMessage.subtype === "success") {
+			const pendingWork = this.getRunnerPendingWork(sessionId);
+			if (pendingWork) {
+				const thoughtBody = formatPendingWorkThought(pendingWork);
+				if (thoughtBody) {
+					await this.createThoughtActivity(sessionId, thoughtBody);
+					log.info(
+						`Posted pending-work thought (${pendingWork.sessionCrons.length} crons, ${pendingWork.backgroundTasks.length} background tasks)`,
+					);
+				}
+			}
+		}
+
 		// Handle child session completion
 		const parentSessionId = this.getParentSessionId?.(sessionId);
 		if (parentSessionId && this.resumeParentSession) {
@@ -509,6 +536,21 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Pending work (scheduled wakeups/crons, in-flight background tasks) for
+	 * the session's runner, or null when the runner doesn't support pending
+	 * work reporting or nothing is pending.
+	 */
+	private getRunnerPendingWork(sessionId: string): AgentPendingWork | null {
+		const runner = this.sessions.get(sessionId)?.agentRunner;
+		if (!runner?.getPendingWork) return null;
+		const pendingWork = runner.getPendingWork();
+		return pendingWork.sessionCrons.length > 0 ||
+			pendingWork.backgroundTasks.length > 0
+			? pendingWork
+			: null;
+	}
+
+	/**
 	 * Consume (clear and return) the stop-requested flag for a session.
 	 *
 	 * Two callers:
@@ -524,6 +566,10 @@ export class AgentSessionManager extends EventEmitter {
 	 * NOT used by `shouldAbortSpawn` itself — it uses the non-consuming
 	 * `isStopRequested` so issue-terminal cleanup's race-prevention path
 	 * stays in control of the flag's lifecycle.
+	 *
+	 * Public (not private) because `handleNormalPromptedActivity` in
+	 * EdgeWorker is an external caller — see the stop-session test that
+	 * asserts public exposure.
 	 */
 	consumeStopRequest(linearAgentActivitySessionId: string): boolean {
 		if (!this.stopRequestedSessions.has(linearAgentActivitySessionId)) {
@@ -715,11 +761,18 @@ export class AgentSessionManager extends EventEmitter {
 						sessionId,
 						message as SDKAssistantMessage,
 					);
-					// Buffer the text content so addResultEntry can post it as the response
+					// Buffer the text content so addResultEntry can post it as the response.
+					// Track whether this body is a tool_use input (JSON) rather than real
+					// assistant prose, so addResultEntry never posts raw tool JSON as the
+					// final "response" when a turn ends on a tool call (CYPACK-1177).
 					if (assistantEntry.content) {
 						this.lastAssistantBodyBySession.set(
 							sessionId,
 							assistantEntry.content,
+						);
+						this.lastAssistantBodyIsToolInputBySession.set(
+							sessionId,
+							!!assistantEntry.metadata?.toolUseId,
 						);
 					}
 					if (assistantEntry.metadata?.toolUseId) {
@@ -937,27 +990,59 @@ export class AgentSessionManager extends EventEmitter {
 						? "cursor"
 						: "claude";
 
-		// For error results, content may be in errors[] rather than result
-		// For success results from Claude, prefer the buffered last assistant message
-		// (structured content) over result.result (plain-text duplicate).
+		// For error results, content may be in errors[] rather than result.
+		const resultText =
+			"result" in resultMessage && typeof resultMessage.result === "string"
+				? resultMessage.result.trim()
+				: "";
+
+		// For success results, prefer the buffered last assistant message
+		// (structured content) over result.result (a plain-text duplicate). But
+		// when a turn ENDS on a tool call with no trailing assistant text, that
+		// buffered body is the tool's raw input JSON — which must never be posted
+		// as the Linear "response" (CYPACK-1177 / CYHOST-905: sessions showed a
+		// "Finished" entry whose body was raw ScheduleWakeup / background-Bash
+		// JSON).
 		const bufferedAssistant = this.lastAssistantBodyBySession.get(sessionId);
+		const bufferedIsToolInput =
+			this.lastAssistantBodyIsToolInputBySession.get(sessionId) ?? false;
 		this.lastAssistantBodyBySession.delete(sessionId);
-		const content = (
-			resultMessage.is_error
-				? resultMessage.is_error &&
-					"errors" in resultMessage &&
-					Array.isArray(resultMessage.errors) &&
-					resultMessage.errors.length > 0
+		this.lastAssistantBodyIsToolInputBySession.delete(sessionId);
+
+		let content: string;
+		if (resultMessage.is_error) {
+			content = (
+				"errors" in resultMessage &&
+				Array.isArray(resultMessage.errors) &&
+				resultMessage.errors.length > 0
 					? resultMessage.errors.join("\n")
-					: "result" in resultMessage &&
-							typeof resultMessage.result === "string"
-						? resultMessage.result
-						: ""
-				: (bufferedAssistant ??
-					("result" in resultMessage && typeof resultMessage.result === "string"
-						? resultMessage.result
-						: ""))
-		).trim();
+					: resultText
+			).trim();
+		} else if (bufferedIsToolInput) {
+			// Turn ended on a tool call. Render a friendly response for a
+			// ScheduleWakeup (gated on the runner actually reporting a pending
+			// cron so a finished session is never rewritten); otherwise fall back
+			// to the SDK's result text and, failing that, post nothing — the raw
+			// tool JSON is never surfaced. Any pending work is declared by the
+			// separate "Standing by" thought, so an empty response here is fine.
+			const pendingWork = this.getRunnerPendingWork(sessionId);
+			const wakeupInput =
+				pendingWork && pendingWork.sessionCrons.length > 0
+					? tryParseScheduleWakeupInput(bufferedAssistant ?? "")
+					: null;
+			content = wakeupInput
+				? formatScheduleWakeupResponse(wakeupInput)
+				: resultText;
+		} else {
+			content = (bufferedAssistant ?? resultText).trim();
+		}
+
+		// Never post an empty/blank "response" activity — that renders as a
+		// bare "Finished" with no body. Skip it entirely (the timeline already
+		// shows the trailing action, and pending work has its own thought).
+		if (!content.trim()) {
+			return;
+		}
 
 		// Resolve telemetry config (per-repo override merged over global) and
 		// build the per-turn record if enabled. Footer is inlined into the

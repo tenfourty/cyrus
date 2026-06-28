@@ -157,9 +157,9 @@ describe("EdgeWorker - System Prompt Resume", () => {
 				claudeRunner: mockClaudeRunner,
 			}),
 		});
-		vi.mocked(AgentSessionManager).mockImplementation(
-			() => mockAgentSessionManager,
-		);
+		vi.mocked(AgentSessionManager).mockImplementation(function () {
+			return mockAgentSessionManager;
+		} as any);
 
 		// Mock SharedApplicationServer
 		vi.mocked(SharedApplicationServer).mockImplementation(function () {
