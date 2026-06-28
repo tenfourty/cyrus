@@ -251,6 +251,40 @@ export declare interface ClaudeRunner {
 }
 
 /**
+ * Substring of the SDK error returned when a resumed conversation's transcript
+ * no longer exists on disk (e.g. aged out past Claude Code's cleanupPeriodDays).
+ * The full error reads "No conversation found with session ID: <id>". This is a
+ * recoverable condition: the resume id is stale, but a fresh conversation can
+ * still serve the prompt.
+ */
+const NO_CONVERSATION_FOUND_MARKER = "No conversation found with session ID";
+
+/**
+ * Note prepended to the prompt when a session restarts fresh after a failed
+ * resume, so the agent knows its prior context is gone and re-reads the source
+ * material instead of assuming continuity with earlier turns.
+ */
+const CONTEXT_RESET_NOTE =
+	"Note: your previous conversation context for this session could not be restored, so this is a fresh start. Re-read the issue/thread and any linked context before responding rather than assuming continuity with earlier turns.";
+
+/**
+ * Extract human-readable error text from an SDK result message, checking both
+ * the `result` string and the `errors` array shapes the SDK uses.
+ */
+function extractResultErrorText(message: SDKMessage): string {
+	if ("result" in message && typeof message.result === "string") {
+		return message.result;
+	}
+	if (
+		"errors" in message &&
+		Array.isArray((message as { errors?: unknown }).errors)
+	) {
+		return (message as { errors: unknown[] }).errors.join("; ");
+	}
+	return "";
+}
+
+/**
  * Manages Claude SDK sessions and communication
  */
 export class ClaudeRunner extends EventEmitter implements IAgentRunner {
@@ -276,6 +310,10 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	private keepSessionWarm: boolean;
 	private pendingSessionCrons: SessionCronSummary[] = [];
 	private pendingBackgroundTasks: BackgroundTaskSummary[] = [];
+	// Per-turn guard: when a resume fails because the target conversation no
+	// longer exists, we restart once without `resume`. Reset at the start of
+	// every startWithPrompt() so each turn gets its own one-shot budget.
+	private resumeFreshStartAttempted = false;
 
 	constructor(config: ClaudeRunnerConfig, keepSessionWarm = false) {
 		super();
@@ -449,6 +487,19 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	}
 
 	/**
+	 * A result message signalling the resumed conversation no longer exists.
+	 * Recoverable: clearing `resume` and starting fresh serves the prompt.
+	 */
+	private isNoConversationFoundResult(message: SDKMessage): boolean {
+		if (message.type !== "result") return false;
+		const isError = "is_error" in message && message.is_error === true;
+		if (!isError) return false;
+		return extractResultErrorText(message).includes(
+			NO_CONVERSATION_FOUND_MARKER,
+		);
+	}
+
+	/**
 	 * Internal method to start a Claude session with either string or streaming prompt
 	 */
 	private async startWithPrompt(
@@ -469,6 +520,8 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		// Reset pending-work state from any previous query on this runner
 		this.pendingSessionCrons = [];
 		this.pendingBackgroundTasks = [];
+		// Each turn gets one fresh-start-on-failed-resume attempt.
+		this.resumeFreshStartAttempted = false;
 
 		const isResumed = !!this.config.resumeSessionId;
 		this.logger.event(isResumed ? "session_resumed" : "session_started", {
@@ -648,209 +701,270 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 
 			const isDebugLogging = this.logger.getLevel() === LogLevel.DEBUG;
 
-			const queryOptions: Parameters<typeof query>[0] = {
-				prompt: promptForQuery,
-				options: {
-					model: this.config.model || "opus",
-					fallbackModel: this.config.fallbackModel || "sonnet",
-					abortController: this.abortController,
-					// Use Claude Code preset by default to maintain backward compatibility
-					// This can be overridden if systemPrompt is explicitly provided
-					systemPrompt: this.config.systemPrompt || {
-						type: "preset",
-						preset: "claude_code",
-						...(this.config.appendSystemPrompt && {
-							append: this.config.appendSystemPrompt,
-						}),
-					},
-					// load file based settings, to maintain more backwards compatibility,
-					// particularly with CLAUDE.md files, settings files, and custom slash commands,
-					// see: https://docs.claude.com/en/docs/claude-code/sdk/migration-guide#settings-sources-no-longer-loaded-by-default
-					settingSources: ["user", "project", "local"],
-					env: {
-						...buildBaseSessionEnv(),
-						// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is intentionally NOT set while
-						// the Linux bubblewrap sandbox side effects it triggers are being
-						// investigated. The sandbox requirements precheck is still run
-						// above so the diagnostics remain available when we re-enable.
-						// See: CYPACK-1108.
-						...this.repositoryEnv,
-						...this.config.additionalEnv,
-						// When logging at DEBUG level, enable the SDK's own debug output so
-						// --debug-to-stderr and DEBUG=1 propagate to the Claude subprocess.
-						// Explicitly set or unset to override any leaked value from process.env.
-						DEBUG_CLAUDE_AGENT_SDK: isDebugLogging ? "1" : undefined,
-					},
-					...(this.config.workingDirectory && {
-						cwd: this.config.workingDirectory,
-					}),
-					// NOTE: there is no SDK `allowedDirectories` query option — the
-					// SDK only honors `additionalDirectories` (the `--add-dir`
-					// flag). `config.allowedDirectories` is consumed earlier to
-					// build `Read(<dir>/**)` tool grants + home-dir deny
-					// exclusions; it must NOT be forwarded here (the SDK would drop
-					// it). Use `additionalDirectories` for `--add-dir`, which also
-					// auto-loads each added dir's `.claude/skills/`.
-					...(this.config.additionalDirectories?.length && {
-						additionalDirectories: this.config.additionalDirectories,
-					}),
-					...(processedAllowedTools && { allowedTools: processedAllowedTools }),
-					...(processedDisallowedTools.length > 0 && {
-						disallowedTools: processedDisallowedTools,
-					}),
-					...(this.canUseToolCallback && {
-						canUseTool: this.canUseToolCallback,
-					}),
-					...(this.config.resumeSessionId && {
-						resume: this.config.resumeSessionId,
-					}),
-					...(this.config.sessionStore && {
-						sessionStore: this.config.sessionStore,
-					}),
-					...(this.config.autoMemoryDirectory && {
-						settings: {
-							autoMemoryDirectory: this.config.autoMemoryDirectory,
+			// Retry loop: runs once normally, twice at most. A second pass
+			// happens only when a resume fails because the conversation no
+			// longer exists (the in-loop `session_resume_fresh_start` branch
+			// clears `resume` and re-seeds the prompt before re-entering).
+			while (true) {
+				const resumingFrom = this.config.resumeSessionId;
+				let needsFreshRestart = false;
+
+				const queryOptions: Parameters<typeof query>[0] = {
+					prompt: promptForQuery,
+					options: {
+						model: this.config.model || "opus",
+						fallbackModel: this.config.fallbackModel || "sonnet",
+						abortController: this.abortController,
+						// Use Claude Code preset by default to maintain backward compatibility
+						// This can be overridden if systemPrompt is explicitly provided
+						systemPrompt: this.config.systemPrompt || {
+							type: "preset",
+							preset: "claude_code",
+							...(this.config.appendSystemPrompt && {
+								append: this.config.appendSystemPrompt,
+							}),
 						},
-					}),
-					...(Object.keys(mcpServers).length > 0 && { mcpServers }),
-					// Only use MCP servers we explicitly pass via `mcpConfig` /
-					// `mcpServers`. The flag is undertyped in the SDK's TS
-					// definition (described as "strict validation") but Claude
-					// Code's `--strict-mcp-config` CLI help is unambiguous:
-					// "Only use MCP servers from --mcp-config, ignoring all
-					// other MCP configurations." That's the contract we want
-					// for hosted sessions — never silently inherit servers
-					// from the user's `~/.claude.json`, project `.mcp.json`,
-					// or other ambient sources.
-					strictMcpConfig: true,
-					hooks: this.buildHooksWithPendingWorkRecorder(),
-					...(this.config.plugins?.length && { plugins: this.config.plugins }),
-					...(this.config.skills !== undefined && {
-						skills: this.config.skills,
-					}),
-					...(this.config.tools !== undefined && { tools: this.config.tools }),
-					...(this.config.maxTurns && { maxTurns: this.config.maxTurns }),
-					...(this.config.outputFormat && {
-						outputFormat: this.config.outputFormat,
-					}),
-					...(this.config.sandbox && { sandbox: this.config.sandbox }),
-					...(this.config.extraArgs && { extraArgs: this.config.extraArgs }),
-					...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
-				},
-			};
+						// load file based settings, to maintain more backwards compatibility,
+						// particularly with CLAUDE.md files, settings files, and custom slash commands,
+						// see: https://docs.claude.com/en/docs/claude-code/sdk/migration-guide#settings-sources-no-longer-loaded-by-default
+						settingSources: ["user", "project", "local"],
+						env: {
+							...buildBaseSessionEnv(),
+							// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is intentionally NOT set while
+							// the Linux bubblewrap sandbox side effects it triggers are being
+							// investigated. The sandbox requirements precheck is still run
+							// above so the diagnostics remain available when we re-enable.
+							// See: CYPACK-1108.
+							...this.repositoryEnv,
+							...this.config.additionalEnv,
+							// When logging at DEBUG level, enable the SDK's own debug output so
+							// --debug-to-stderr and DEBUG=1 propagate to the Claude subprocess.
+							// Explicitly set or unset to override any leaked value from process.env.
+							DEBUG_CLAUDE_AGENT_SDK: isDebugLogging ? "1" : undefined,
+						},
+						...(this.config.workingDirectory && {
+							cwd: this.config.workingDirectory,
+						}),
+						// NOTE: there is no SDK `allowedDirectories` query option — the
+						// SDK only honors `additionalDirectories` (the `--add-dir`
+						// flag). `config.allowedDirectories` is consumed earlier to
+						// build `Read(<dir>/**)` tool grants + home-dir deny
+						// exclusions; it must NOT be forwarded here (the SDK would drop
+						// it). Use `additionalDirectories` for `--add-dir`, which also
+						// auto-loads each added dir's `.claude/skills/`.
+						...(this.config.additionalDirectories?.length && {
+							additionalDirectories: this.config.additionalDirectories,
+						}),
+						...(processedAllowedTools && {
+							allowedTools: processedAllowedTools,
+						}),
+						...(processedDisallowedTools.length > 0 && {
+							disallowedTools: processedDisallowedTools,
+						}),
+						...(this.canUseToolCallback && {
+							canUseTool: this.canUseToolCallback,
+						}),
+						...(this.config.resumeSessionId && {
+							resume: this.config.resumeSessionId,
+						}),
+						...(this.config.sessionStore && {
+							sessionStore: this.config.sessionStore,
+						}),
+						...(this.config.autoMemoryDirectory && {
+							settings: {
+								autoMemoryDirectory: this.config.autoMemoryDirectory,
+							},
+						}),
+						...(Object.keys(mcpServers).length > 0 && { mcpServers }),
+						// Only use MCP servers we explicitly pass via `mcpConfig` /
+						// `mcpServers`. The flag is undertyped in the SDK's TS
+						// definition (described as "strict validation") but Claude
+						// Code's `--strict-mcp-config` CLI help is unambiguous:
+						// "Only use MCP servers from --mcp-config, ignoring all
+						// other MCP configurations." That's the contract we want
+						// for hosted sessions — never silently inherit servers
+						// from the user's `~/.claude.json`, project `.mcp.json`,
+						// or other ambient sources.
+						strictMcpConfig: true,
+						hooks: this.buildHooksWithPendingWorkRecorder(),
+						...(this.config.plugins?.length && {
+							plugins: this.config.plugins,
+						}),
+						...(this.config.skills !== undefined && {
+							skills: this.config.skills,
+						}),
+						...(this.config.tools !== undefined && {
+							tools: this.config.tools,
+						}),
+						...(this.config.maxTurns && { maxTurns: this.config.maxTurns }),
+						...(this.config.outputFormat && {
+							outputFormat: this.config.outputFormat,
+						}),
+						...(this.config.sandbox && { sandbox: this.config.sandbox }),
+						...(this.config.extraArgs && { extraArgs: this.config.extraArgs }),
+						...(pathToClaudeCodeExecutable && { pathToClaudeCodeExecutable }),
+					},
+				};
 
-			// Local DEBUG console keeps the full untruncated payload — useful
-			// when troubleshooting on the host machine where secrets aren't an
-			// issue.
-			if (isDebugLogging) {
-				const serializedQueryOptions = JSON.stringify(
-					queryOptions,
-					serializeQueryOptionsReplacer,
-					2,
+				// Local DEBUG console keeps the full untruncated payload — useful
+				// when troubleshooting on the host machine where secrets aren't an
+				// issue.
+				if (isDebugLogging) {
+					const serializedQueryOptions = JSON.stringify(
+						queryOptions,
+						serializeQueryOptionsReplacer,
+						2,
+					);
+					this.logger.debug(`Claude query options: ${serializedQueryOptions}`);
+				}
+				// What ships to Sentry is a flattened set of primitive attributes,
+				// not a single nested-JSON string. A long JSON value attached
+				// under a single key (we tried `options`) gets pattern-matched by
+				// Sentry's server-side scrubber and replaced with `[Filtered]`,
+				// wiping the entire diagnostic payload. Sending each datum as its
+				// own short, primitive attribute avoids that — short non-credential
+				// values don't trip the matcher, and a per-key filter (if it ever
+				// fires) only loses one attribute, not the whole payload.
+				const flat = flattenSanitizedQueryOptions(
+					buildSanitizedQueryOptions(queryOptions),
 				);
-				this.logger.debug(`Claude query options: ${serializedQueryOptions}`);
-			}
-			// What ships to Sentry is a flattened set of primitive attributes,
-			// not a single nested-JSON string. A long JSON value attached
-			// under a single key (we tried `options`) gets pattern-matched by
-			// Sentry's server-side scrubber and replaced with `[Filtered]`,
-			// wiping the entire diagnostic payload. Sending each datum as its
-			// own short, primitive attribute avoids that — short non-credential
-			// values don't trip the matcher, and a per-key filter (if it ever
-			// fires) only loses one attribute, not the whole payload.
-			const flat = flattenSanitizedQueryOptions(
-				buildSanitizedQueryOptions(queryOptions),
-			);
-			this.logger.event("claude_query_options", flat);
+				this.logger.event("claude_query_options", flat);
 
-			// Process messages from the query
-			// Use pre-warmed session if available (eliminates cold-start subprocess spawn cost).
-			// warmSession.query() accepts both string and AsyncIterable<SDKUserMessage>,
-			// so promptForQuery works correctly for both start() and startStreaming().
-			if (this.config.warmSession) {
-				this.logger.debug("Using pre-warmed session for first turn");
-				this.activeQuery = this.config.warmSession.query(promptForQuery);
-			} else {
-				this.activeQuery = query(queryOptions);
-			}
-			for await (const message of this.activeQuery) {
-				if (!this.sessionInfo?.isRunning) {
-					this.logger.info("Session was stopped, breaking from query loop");
-					break;
+				// Process messages from the query
+				// Use pre-warmed session if available (eliminates cold-start subprocess spawn cost).
+				// warmSession.query() accepts both string and AsyncIterable<SDKUserMessage>,
+				// so promptForQuery works correctly for both start() and startStreaming().
+				if (this.config.warmSession && !this.resumeFreshStartAttempted) {
+					this.logger.debug("Using pre-warmed session for first turn");
+					this.activeQuery = this.config.warmSession.query(promptForQuery);
+				} else {
+					this.activeQuery = query(queryOptions);
 				}
-
-				// Extract session ID from first message if we don't have one yet
-				if (!this.sessionInfo.sessionId && message.session_id) {
-					this.sessionInfo.sessionId = message.session_id;
-					this.logger.event("claude_session_id_assigned", {
-						claudeSessionId: message.session_id,
-					});
-
-					// Update streaming prompt with session ID if it exists
-					if (this.streamingPrompt) {
-						this.streamingPrompt.updateSessionId(message.session_id);
+				for await (const message of this.activeQuery) {
+					if (!this.sessionInfo?.isRunning) {
+						this.logger.info("Session was stopped, breaking from query loop");
+						break;
 					}
 
-					// Re-setup logging now that we have the session ID
-					this.setupLogging();
-				}
-
-				this.messages.push(message);
-
-				// Log to detailed JSON log
-				if (this.logStream) {
-					const logEntry = {
-						type: "sdk-message",
-						message,
-						timestamp: new Date().toISOString(),
-					};
-					this.logStream.write(`${JSON.stringify(logEntry)}\n`);
-				}
-
-				// Log to human-readable log
-				if (this.readableLogStream) {
-					this.writeReadableLogEntry(message);
-				}
-
-				// Emit all messages (including result) immediately in-loop.
-				// When keepSessionWarm is true, the streamingPrompt stays open for
-				// follow-up messages so the SDK session can be reused. Otherwise we
-				// complete the streaming prompt on result so the for-await loop exits
-				// and the subprocess can shut down (pre-warm-sessions behavior).
-				this.logger.event("message_emitted", {
-					messageType: message.type,
-					claudeSessionId: this.sessionInfo?.sessionId,
-				});
-				this.emit("message", message);
-				this.processMessage(message);
-				if (
-					message.type === "result" &&
-					!this.keepSessionWarm &&
-					this.streamingPrompt
-				) {
-					// The Stop hook fires before the result message reaches this
-					// loop, so the pending-work snapshot is fresh for this turn.
-					// When a scheduled wakeup or background task is still in
-					// flight, completing the prompt would close the CLI's stdin
-					// and kill the in-process timer with it (verified in the
-					// CYPACK-1310 test drive) — hold the prompt open instead and
-					// let the wakeup turn run; its own Stop hook reports empty
-					// pending work, and the result that follows completes the
-					// prompt here. Error results always complete: pending-work
-					// state may be stale when a turn dies mid-flight.
-					if (message.subtype === "success" && this.hasPendingWork()) {
-						this.logger.event("session_held_open_for_pending_work", {
-							sessionCronCount: this.pendingSessionCrons.length,
-							backgroundTaskCount: this.pendingBackgroundTasks.length,
-							claudeSessionId: this.sessionInfo?.sessionId,
+					// Recoverable resume failure: the persisted conversation no
+					// longer exists (transcript aged out / pruned). Restart once
+					// without `resume` instead of surfacing a fatal 0-turn error.
+					// The error result is intentionally NOT emitted/processed, so
+					// the downstream session lifecycle sees one clean turn.
+					if (
+						resumingFrom &&
+						!this.resumeFreshStartAttempted &&
+						this.isNoConversationFoundResult(message)
+					) {
+						this.logger.event("session_resume_fresh_start", {
+							failedResumeSessionId: resumingFrom,
+							claudeSessionId: this.sessionInfo?.sessionId ?? null,
 						});
-					} else {
-						this.streamingPrompt.complete();
+						this.resumeFreshStartAttempted = true;
+						this.config.resumeSessionId = undefined;
+						needsFreshRestart = true;
+						break;
+					}
+
+					// Extract session ID from first message if we don't have one yet
+					if (!this.sessionInfo.sessionId && message.session_id) {
+						this.sessionInfo.sessionId = message.session_id;
+						this.logger.event("claude_session_id_assigned", {
+							claudeSessionId: message.session_id,
+						});
+
+						// Update streaming prompt with session ID if it exists
+						if (this.streamingPrompt) {
+							this.streamingPrompt.updateSessionId(message.session_id);
+						}
+
+						// Re-setup logging now that we have the session ID
+						this.setupLogging();
+					}
+
+					this.messages.push(message);
+
+					// Log to detailed JSON log
+					if (this.logStream) {
+						const logEntry = {
+							type: "sdk-message",
+							message,
+							timestamp: new Date().toISOString(),
+						};
+						this.logStream.write(`${JSON.stringify(logEntry)}\n`);
+					}
+
+					// Log to human-readable log
+					if (this.readableLogStream) {
+						this.writeReadableLogEntry(message);
+					}
+
+					// Emit all messages (including result) immediately in-loop.
+					// When keepSessionWarm is true, the streamingPrompt stays open for
+					// follow-up messages so the SDK session can be reused. Otherwise we
+					// complete the streaming prompt on result so the for-await loop exits
+					// and the subprocess can shut down (pre-warm-sessions behavior).
+					this.logger.event("message_emitted", {
+						messageType: message.type,
+						claudeSessionId: this.sessionInfo?.sessionId,
+					});
+					this.emit("message", message);
+					this.processMessage(message);
+					if (
+						message.type === "result" &&
+						!this.keepSessionWarm &&
+						this.streamingPrompt
+					) {
+						// The Stop hook fires before the result message reaches this
+						// loop, so the pending-work snapshot is fresh for this turn.
+						// When a scheduled wakeup or background task is still in
+						// flight, completing the prompt would close the CLI's stdin
+						// and kill the in-process timer with it (verified in the
+						// CYPACK-1310 test drive) — hold the prompt open instead and
+						// let the wakeup turn run; its own Stop hook reports empty
+						// pending work, and the result that follows completes the
+						// prompt here. Error results always complete: pending-work
+						// state may be stale when a turn dies mid-flight.
+						if (message.subtype === "success" && this.hasPendingWork()) {
+							this.logger.event("session_held_open_for_pending_work", {
+								sessionCronCount: this.pendingSessionCrons.length,
+								backgroundTaskCount: this.pendingBackgroundTasks.length,
+								claudeSessionId: this.sessionInfo?.sessionId,
+							});
+						} else {
+							this.streamingPrompt.complete();
+						}
 					}
 				}
-			}
 
-			this.activeQuery = null;
+				this.activeQuery = null;
+
+				if (needsFreshRestart) {
+					// Reset per-attempt state so the fresh conversation's id is
+					// captured (replacing the stale one in persisted state) and
+					// no partial messages from the failed attempt leak forward.
+					this.messages = [];
+					if (this.sessionInfo) {
+						this.sessionInfo.sessionId = null;
+					}
+					// Re-seed the prompt with a context-reset note. String and
+					// streaming modes are rebuilt the same way they were first
+					// constructed above.
+					if (stringPrompt !== null && stringPrompt !== undefined) {
+						promptForQuery = `${CONTEXT_RESET_NOTE}\n\n${stringPrompt}`;
+					} else {
+						this.streamingPrompt = new StreamingPrompt(
+							null,
+							streamingInitialPrompt
+								? `${CONTEXT_RESET_NOTE}\n\n${streamingInitialPrompt}`
+								: CONTEXT_RESET_NOTE,
+						);
+						promptForQuery = this.streamingPrompt;
+					}
+					continue;
+				}
+				break;
+			}
 
 			// Session completed successfully - mark as not running BEFORE emitting result
 			// This ensures any code checking isRunning() during result processing sees the correct state

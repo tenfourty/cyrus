@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Re-triggering an issue whose Claude conversation had expired no longer fails silently. When a session was resumed after its underlying Claude Code transcript had aged out (e.g. an issue pinged again weeks later), Cyrus ended the turn immediately with a "No conversation found" error and dropped your prompt until someone manually reset the session. Cyrus now detects this, starts a fresh conversation in the same turn — telling the agent its prior context was lost so it re-reads the issue/thread — and proceeds with your prompt. No manual recovery needed.
 
 ## [0.2.67] - 2026-07-25
 
