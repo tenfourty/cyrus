@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Re-triggering an issue whose Claude conversation had expired no longer fails silently. When a session was resumed after its underlying Claude Code transcript had aged out (e.g. an issue pinged again weeks later), Cyrus ended the turn immediately with a "No conversation found" error and dropped your prompt until someone manually reset the session. Cyrus now detects this, starts a fresh conversation in the same turn — telling the agent its prior context was lost so it re-reads the issue/thread — and proceeds with your prompt. No manual recovery needed.
 - Forwarded and shared Slack messages are now included when you @mention Cyrus. Previously, forwarding a message (for example a Sentry alert) into a channel and @mentioning Cyrus passed along only your typed comment — the forwarded message's contents were dropped, so a forward with no comment gave Cyrus nothing to work with. The forwarded content is now part of the prompt. ([#1326](https://github.com/cyrusagents/cyrus/pull/1326))
 
 ### Changed

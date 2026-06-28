@@ -895,4 +895,233 @@ describe("ClaudeRunner", () => {
 			// (This tests the filtering logic in writeReadableLogEntry)
 		});
 	});
+
+	describe("fresh-start fallback when resume fails ('No conversation found')", () => {
+		const NO_CONVERSATION_ERROR = (id: string) =>
+			`No conversation found with session ID: ${id}`;
+
+		function freshSuccess(sessionId: string): SDKMessage[] {
+			return [
+				{
+					type: "assistant",
+					message: { content: [{ type: "text", text: "fresh hello" }] },
+					parent_tool_use_id: null,
+					session_id: sessionId,
+				} as any,
+				{
+					type: "result",
+					subtype: "success",
+					is_error: false,
+					num_turns: 1,
+					session_id: sessionId,
+				} as any,
+			];
+		}
+
+		it("starts a fresh conversation (no resume) and surfaces only the success result", async () => {
+			const resumeRunner = new ClaudeRunner({
+				...defaultConfig,
+				resumeSessionId: "stale-id",
+			});
+			const messageHandler = vi.fn();
+			const errorHandler = vi.fn();
+			resumeRunner.on("message", messageHandler);
+			resumeRunner.on("error", errorHandler);
+
+			const resumeValues: (string | undefined)[] = [];
+			let call = 0;
+			mockQuery.mockImplementation(async function* ({ options }: any) {
+				call++;
+				resumeValues.push(options.resume);
+				if (call === 1) {
+					yield {
+						type: "result",
+						subtype: "error_during_execution",
+						is_error: true,
+						num_turns: 0,
+						session_id: "stale-id",
+						errors: [NO_CONVERSATION_ERROR("stale-id")],
+					} as any;
+				} else {
+					for (const m of freshSuccess("new-session-id")) yield m;
+				}
+			});
+
+			const info = await resumeRunner.start("Please do the thing");
+
+			// Retried exactly once.
+			expect(mockQuery).toHaveBeenCalledTimes(2);
+			// First attempt resumed, second started fresh.
+			expect(resumeValues[0]).toBe("stale-id");
+			expect(resumeValues[1]).toBeUndefined();
+			// New session id captured (criterion 2).
+			expect(info.sessionId).toBe("new-session-id");
+			// Error result never surfaced (criteria 1 & 3).
+			expect(errorHandler).not.toHaveBeenCalled();
+			const emittedResults = messageHandler.mock.calls
+				.map((c) => c[0] as any)
+				.filter((m) => m.type === "result");
+			expect(emittedResults).toHaveLength(1);
+			expect(emittedResults[0].subtype).toBe("success");
+			expect(emittedResults[0].is_error).toBe(false);
+		});
+
+		it("prepends a context-reset note to the fresh-start prompt, leaving the first attempt unchanged", async () => {
+			const resumeRunner = new ClaudeRunner({
+				...defaultConfig,
+				resumeSessionId: "stale-id",
+			});
+
+			const prompts: string[] = [];
+			let call = 0;
+			mockQuery.mockImplementation(async function* ({ prompt, options }: any) {
+				call++;
+				prompts.push(prompt);
+				if (call === 1) {
+					expect(options.resume).toBe("stale-id");
+					yield {
+						type: "result",
+						subtype: "error_during_execution",
+						is_error: true,
+						num_turns: 0,
+						session_id: "stale-id",
+						errors: [NO_CONVERSATION_ERROR("stale-id")],
+					} as any;
+				} else {
+					for (const m of freshSuccess("new-session-id")) yield m;
+				}
+			});
+
+			await resumeRunner.start("Please do the thing");
+
+			expect(prompts[0]).toBe("Please do the thing");
+			expect(prompts[1]).toContain("Please do the thing");
+			expect(prompts[1]).toContain("could not be restored");
+		});
+
+		it("does not retry a second time if the fresh start also fails", async () => {
+			const resumeRunner = new ClaudeRunner({
+				...defaultConfig,
+				resumeSessionId: "stale-id",
+			});
+			const messageHandler = vi.fn();
+			resumeRunner.on("message", messageHandler);
+
+			mockQuery.mockImplementation(async function* () {
+				// Both attempts fail the same way; the guard must stop after one retry.
+				yield {
+					type: "result",
+					subtype: "error_during_execution",
+					is_error: true,
+					num_turns: 0,
+					session_id: "stale-id",
+					errors: [NO_CONVERSATION_ERROR("stale-id")],
+				} as any;
+			});
+
+			await resumeRunner.start("do it");
+
+			// Exactly one retry — no infinite loop.
+			expect(mockQuery).toHaveBeenCalledTimes(2);
+			// The second (still-failing) result is surfaced as terminal.
+			const emittedResults = messageHandler.mock.calls
+				.map((c) => c[0] as any)
+				.filter((m) => m.type === "result");
+			expect(emittedResults).toHaveLength(1);
+			expect(emittedResults[0].is_error).toBe(true);
+		});
+
+		it("does not fresh-start for non-resume errors (e.g. prompt too long)", async () => {
+			const resumeRunner = new ClaudeRunner({
+				...defaultConfig,
+				resumeSessionId: "stale-id",
+			});
+			const messageHandler = vi.fn();
+			resumeRunner.on("message", messageHandler);
+
+			mockQuery.mockImplementation(async function* () {
+				yield {
+					type: "result",
+					subtype: "success",
+					is_error: true,
+					num_turns: 0,
+					session_id: "stale-id",
+					result: "Prompt is too long",
+				} as any;
+			});
+
+			await resumeRunner.start("x");
+
+			// No retry — only resume-not-found triggers the fallback.
+			expect(mockQuery).toHaveBeenCalledTimes(1);
+			const emittedResults = messageHandler.mock.calls
+				.map((c) => c[0] as any)
+				.filter((m) => m.type === "result");
+			expect(emittedResults).toHaveLength(1);
+			expect(emittedResults[0].is_error).toBe(true);
+		});
+
+		it("does not fresh-start when no resume was attempted", async () => {
+			const freshRunner = new ClaudeRunner({ ...defaultConfig });
+			const messageHandler = vi.fn();
+			freshRunner.on("message", messageHandler);
+
+			mockQuery.mockImplementation(async function* () {
+				yield {
+					type: "result",
+					subtype: "error_during_execution",
+					is_error: true,
+					num_turns: 0,
+					session_id: "whatever",
+					errors: [NO_CONVERSATION_ERROR("whatever")],
+				} as any;
+			});
+
+			await freshRunner.start("x");
+
+			expect(mockQuery).toHaveBeenCalledTimes(1);
+		});
+
+		it("starts fresh for streaming sessions, re-seeding the initial prompt with the reset note", async () => {
+			const resumeRunner = new ClaudeRunner({
+				...defaultConfig,
+				resumeSessionId: "stale-id",
+			});
+
+			const resumeValues: (string | undefined)[] = [];
+			const firstStreamedContents: string[] = [];
+			let call = 0;
+			mockQuery.mockImplementation(async function* ({ prompt, options }: any) {
+				call++;
+				resumeValues.push(options.resume);
+				if (call === 2) {
+					const iterator = prompt[Symbol.asyncIterator]();
+					const first = await iterator.next();
+					firstStreamedContents.push(first.value?.message?.content);
+				}
+				if (call === 1) {
+					yield {
+						type: "result",
+						subtype: "error_during_execution",
+						is_error: true,
+						num_turns: 0,
+						session_id: "stale-id",
+						errors: [NO_CONVERSATION_ERROR("stale-id")],
+					} as any;
+				} else {
+					for (const m of freshSuccess("new-id")) yield m;
+				}
+			});
+
+			const info = await resumeRunner.startStreaming(
+				"Initial streaming prompt",
+			);
+
+			expect(mockQuery).toHaveBeenCalledTimes(2);
+			expect(resumeValues[1]).toBeUndefined();
+			expect(info.sessionId).toBe("new-id");
+			expect(firstStreamedContents[0]).toContain("Initial streaming prompt");
+			expect(firstStreamedContents[0]).toContain("could not be restored");
+		});
+	});
 });
