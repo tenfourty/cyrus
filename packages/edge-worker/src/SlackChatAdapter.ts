@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import type { IAgentRunner, ILogger } from "cyrus-core";
 import { createLogger } from "cyrus-core";
 import {
+	buildPromptText,
 	SlackMessageService,
 	SlackReactionService,
 	type SlackThreadMessage,
@@ -108,8 +109,11 @@ export class SlackChatAdapter
 	}
 
 	extractTaskInstructions(event: SlackWebhookEvent): string {
-		const stripped = stripSlackMention(event.payload.text);
-		const { cleanText } = parseSlackRepoTag(stripped);
+		// `buildPromptText` strips the bot mention and appends any
+		// forwarded/shared message content (upstream #1326). Then strip the
+		// tenfourty `[repo:...]` routing tag so it doesn't leak into the prompt.
+		const promptText = buildPromptText(event.payload);
+		const { cleanText } = parseSlackRepoTag(promptText);
 		return cleanText || "Ask the user for more context";
 	}
 

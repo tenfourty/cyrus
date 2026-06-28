@@ -135,6 +135,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});
@@ -171,6 +174,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});
@@ -207,6 +213,9 @@ describe("ClaudeRunner", () => {
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
 					}),
 					strictMcpConfig: true,
+					// Internal pending-work recorder Stop hook is always registered
+					// (CYPACK-1310)
+					hooks: { Stop: [expect.objectContaining({ matcher: ".*" })] },
 				},
 			});
 		});
@@ -917,15 +926,19 @@ describe("ClaudeRunner", () => {
 
 			const call = mockQuery.mock.calls[0][0];
 			const passed: string[] = call.options.allowedTools;
-			expect(passed).toEqual(expect.arrayContaining(["mcp__linear", "Read(./.claude/**)"]));
+			expect(passed).toEqual(
+				expect.arrayContaining(["mcp__linear", "Read(./.claude/**)"]),
+			);
+			// Widened set comes from `getAllTools()` (config.ts `availableTools`).
+			// The claude-agent-sdk 0.3.185 tool-list refresh (#1342) dropped the
+			// standalone `Glob`/`Grep` entries, so the widened list no longer
+			// includes them — assert the built-ins that remain in the taxonomy.
 			expect(passed).toEqual(
 				expect.arrayContaining([
 					"Bash",
 					"Edit(**)",
 					"Write(**)",
 					"Read(**)",
-					"Glob",
-					"Grep",
 					"Skill",
 				]),
 			);
