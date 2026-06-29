@@ -270,5 +270,24 @@ describe("EdgeWorker - concurrent sessions on one issue", () => {
 			);
 			expect(thoughtCall).toBeDefined();
 		});
+
+		it("echoes the comment into the decline note when there is no live runner yet (initializing sibling)", async () => {
+			await (edgeWorker as any).foldDuplicateSessionIntoActive(
+				createdWebhook("sess-dup", "@cyrus also rename the flag").agentSession,
+				undefined, // sibling still initializing — no target/runner
+				"test-workspace",
+				"@cyrus also rename the flag",
+			);
+
+			// The duplicate's message is preserved in its own closing response,
+			// not silently dropped.
+			const declineCall = createAgentActivity.mock.calls.find(
+				([input]) =>
+					input?.agentSessionId === "sess-dup" &&
+					input?.content?.type === "response" &&
+					String(input?.content?.body).includes("@cyrus also rename the flag"),
+			);
+			expect(declineCall).toBeDefined();
+		});
 	});
 });
