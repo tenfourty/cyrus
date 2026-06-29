@@ -216,6 +216,10 @@ import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
 import { formatTerminalStopMessage } from "./terminal-stop-message.js";
 import type { AgentSessionData, EdgeWorkerEvents } from "./types.js";
 import { UserAccessControl } from "./UserAccessControl.js";
+import {
+	buildWarmupStartupOptions,
+	isNoConversationFoundError,
+} from "./warmupSession.js";
 
 /**
  * Returns true if a raw webhook payload appears to be an agentSessionPrompted
@@ -7631,6 +7635,9 @@ ${input.userComment}
 
 		const { startup } = await import("@anthropic-ai/claude-agent-sdk");
 
+		let failed = 0;
+		let skipped = 0;
+
 		await Promise.all(
 			candidates.map(async (session) => {
 				try {
@@ -7699,18 +7706,21 @@ ${input.userComment}
 					const disallowedTools = this.buildDisallowedTools(repo);
 
 					const warm = await startup({
-						options: {
-							resume: session.claudeSessionId,
+						// `cwd` must match the live runner's working directory for this
+						// session (the primary repo subdir for multi-repo workspaces),
+						// or Claude Code looks for the transcript under the wrong project
+						// slug and resume fails with "No conversation found".
+						options: buildWarmupStartupOptions({
+							session,
+							repository: repo,
 							model,
-							cwd: session.workspace.path,
-							...(Object.keys(mcpServers).length > 0 && { mcpServers }),
-							...(allowedTools.length > 0 && { allowedTools }),
-							...(disallowedTools.length > 0 && { disallowedTools }),
-							settingSources: ["user", "project", "local"],
+							mcpServers,
+							allowedTools,
+							disallowedTools,
 							// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is intentionally not set here;
 							// see CYPACK-1108 and ClaudeRunner.start() for context.
 							env: buildBaseSessionEnv(),
-						},
+						}),
 					});
 
 					this.warmInstances.set(session.id, warm);
@@ -7718,13 +7728,26 @@ ${input.userComment}
 						`Pre-warmed session ${session.id} (${session.issueContext?.issueIdentifier ?? "unknown"})`,
 					);
 				} catch (err) {
-					this.logger.debug(`Failed to pre-warm session ${session.id}:`, err);
+					if (isNoConversationFoundError(err)) {
+						// Transcript is genuinely gone (aged out / pruned). Nothing to
+						// warm — the live runner's fresh-start fallback handles it when
+						// the user's prompt arrives. Counted as a skip, not a failure.
+						skipped++;
+						this.logger.debug(
+							`Skipping pre-warm for session ${session.id}: conversation transcript no longer exists`,
+						);
+					} else {
+						failed++;
+						this.logger.debug(`Failed to pre-warm session ${session.id}:`, err);
+					}
 				}
 			}),
 		);
 
+		// Surface the breakdown at info: a 0-warmed or partial outcome must be
+		// visible without DEBUG (the cwd bug made warm mode silently warm 0).
 		this.logger.info(
-			`Session pre-warm complete: ${this.warmInstances.size} sessions ready`,
+			`Session pre-warm complete: ${this.warmInstances.size} ready, ${failed} failed, ${skipped} skipped (no transcript) of ${candidates.length}`,
 		);
 	}
 
