@@ -160,6 +160,7 @@ describe("EdgeWorker - Screenshot Upload Guidance Hooks", () => {
 		// Mock AgentSessionManager
 		mockAgentSessionManager = {
 			createCyrusAgentSession: vi.fn(),
+			getActiveSessionsByIssueId: vi.fn(() => []),
 			getSession: vi.fn().mockReturnValue({
 				issueId: "issue-123",
 				workspace: { path: "/test/workspaces/TEST-123" },
