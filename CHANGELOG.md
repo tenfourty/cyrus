@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Two agents no longer race on one issue's worktree. When a single Linear issue produced two agent sessions close together (e.g. a delegation plus a comment @mention), Cyrus started a runner for each and both edited the same worktree and branch at once — causing lost edits, interleaved commits, and one session seeing files the other created. Cyrus now detects that an issue already has a live session and, instead of starting a second runner, routes the new message into the active session and closes the duplicate thread with a note. A per-issue lock makes this safe even when the two triggers arrive simultaneously.
 - Forwarded and shared Slack messages are now included when you @mention Cyrus. Previously, forwarding a message (for example a Sentry alert) into a channel and @mentioning Cyrus passed along only your typed comment — the forwarded message's contents were dropped, so a forward with no comment gave Cyrus nothing to work with. The forwarded content is now part of the prompt. ([#1326](https://github.com/cyrusagents/cyrus/pull/1326))
 
 ### Changed
