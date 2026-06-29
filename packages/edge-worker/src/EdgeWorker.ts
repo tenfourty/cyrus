@@ -4906,12 +4906,29 @@ ${taskSection}`;
 		const dedupIssueId = agentSession.issue!.id;
 		const decision = await this.issueSessionMutex.runExclusive(
 			dedupIssueId,
-			async () =>
-				decideSessionCreationAction(dedupIssueId, agentSession.id, {
-					getActiveSessionsByIssueId: (id) =>
-						this.agentSessionManager.getActiveSessionsByIssueId(id),
-					isIssueInitializing: (id) => this.issuesInitializing.has(id),
-				}),
+			async () => {
+				const action = decideSessionCreationAction(
+					dedupIssueId,
+					agentSession.id,
+					{
+						getActiveSessionsByIssueId: (id) =>
+							this.agentSessionManager.getActiveSessionsByIssueId(id),
+						isIssueInitializing: (id) => this.issuesInitializing.has(id),
+					},
+				);
+				// Reserve INSIDE the lock so check-and-reserve is atomic by
+				// construction — not merely by the promise-ordering that holds
+				// when reserving after runExclusive() returns (which a future
+				// `await` between the call and the reserve could break). The
+				// matching delete runs in the finally below; by then the session
+				// has long since registered Active in initializeAgentRunner
+				// (which marks it Active before its first await), so the
+				// reservation hands off cleanly to the active-session check.
+				if (action.action === "create") {
+					this.issuesInitializing.add(dedupIssueId);
+				}
+				return action;
+			},
 		);
 
 		if (decision.action === "fold-in") {
@@ -4924,7 +4941,6 @@ ${taskSection}`;
 			return;
 		}
 
-		this.issuesInitializing.add(dedupIssueId);
 		try {
 			// Initialize agent runner using shared logic (pass full repositories array)
 			await this.initializeAgentRunner(
@@ -4991,9 +5007,22 @@ ${taskSection}`;
 		}
 
 		// Close the duplicate session's thread so Linear doesn't show it working.
-		const note = targetSessionId
-			? "This issue is already being worked by an active agent session, so I won't start a second one here. Your message has been routed into that session."
-			: "This issue is already being picked up by another agent session, so I won't start a second one here.";
+		// When there's no live runner to route into yet (a sibling still
+		// initializing), echo the message back into this thread so it is never
+		// silently dropped — the initializing sibling also picks it up from the
+		// issue comments when it builds its prompt, but echoing guards the case
+		// where the trigger wasn't a top-level issue comment.
+		let note: string;
+		if (targetSessionId) {
+			note =
+				"This issue is already being worked by an active agent session, so I won't start a second one here. Your message has been routed into that session.";
+		} else {
+			note =
+				"This issue is already being picked up by another agent session, so I won't start a second one here.";
+			if (trimmedComment) {
+				note += `\n\nYour message will be handled by that session:\n\n${trimmedComment}`;
+			}
+		}
 		try {
 			const issueTracker = this.getIssueTrackerForWorkspace(linearWorkspaceId);
 			if (issueTracker) {
