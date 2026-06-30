@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Pre-warmed Claude sessions no longer leak orphan subprocesses across restarts.** With `CYRUS_ENABLE_WARM_SESSIONS=1`, startup pre-warmed the N most-recent sessions — including terminal (Complete/Error) ones that will never receive a follow-up prompt. Those warm subprocesses were never consumed and never reaped: they sat idle for the entire process lifetime (~110–160 MB RSS + a live LLM-gateway connection each), and the next restart re-warmed the same dead sessions, so the leak re-established itself rather than clearing. Pre-warm now skips terminal-status sessions, every warm instance gets an idle-expiry timer (default 10 min, configurable via `CYRUS_WARM_INSTANCE_TTL_MS`) that kills its subprocess if no prompt arrives, and warm instances are reaped on shutdown and when their session reaches a terminal state. Unconsumed warm instances no longer survive process exit or re-spawn on the next boot.
 - Forwarded and shared Slack messages are now included when you @mention Cyrus. Previously, forwarding a message (for example a Sentry alert) into a channel and @mentioning Cyrus passed along only your typed comment — the forwarded message's contents were dropped, so a forward with no comment gave Cyrus nothing to work with. The forwarded content is now part of the prompt. ([#1326](https://github.com/cyrusagents/cyrus/pull/1326))
 
 ### Changed

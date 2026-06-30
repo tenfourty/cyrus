@@ -52,6 +52,7 @@ import type {
 	WebhookIssue,
 } from "cyrus-core";
 import {
+	AgentSessionStatus,
 	CLIIssueTrackerService,
 	CLIRPCServer,
 	createLogger,
@@ -197,6 +198,16 @@ type CyrusToolsMcpContext = {
 };
 
 /**
+ * Idle TTL for pre-warmed Claude sessions. A warm instance that is never
+ * consumed by a matching follow-up prompt is reaped after this bound so it
+ * cannot leak for the whole process lifetime or re-establish itself across
+ * restarts. Override with CYRUS_WARM_INSTANCE_TTL_MS.
+ */
+const WARM_INSTANCE_IDLE_TTL_MS =
+	Number.parseInt(process.env.CYRUS_WARM_INSTANCE_TTL_MS ?? "", 10) ||
+	10 * 60 * 1000; // 10 min default
+
+/**
  * Unified edge worker that **orchestrates**
  *   capturing Linear webhooks,
  *   managing Claude Code processes, and
@@ -210,6 +221,13 @@ export class EdgeWorker extends EventEmitter {
 	private sessionRepositories: Map<string, string> = new Map(); // Maps session ID to repository ID
 	private lastStopTimeBySession: Map<string, number> = new Map(); // Maps session ID to timestamp of last stop signal (for double-stop detection)
 	private warmInstances: Map<string, WarmQuery> = new Map(); // Pre-warmed Claude sessions keyed by agentSessionId
+	/**
+	 * Per-instance idle-expiry timers for warm sessions. A warm instance that is
+	 * never consumed by a matching prompt is reaped (subprocess killed) after
+	 * {@link WARM_INSTANCE_IDLE_TTL_MS} so it cannot leak for the whole process
+	 * lifetime or re-leak across restarts. Keyed by agentSessionId.
+	 */
+	private warmInstanceExpiryTimers: Map<string, NodeJS.Timeout> = new Map();
 	private issueTrackers: Map<string, IIssueTrackerService> = new Map(); // one issue tracker per Linear workspace (keyed by linearWorkspaceId)
 	private linearEventTransport: LinearEventTransport | null = null; // Single event transport for webhook delivery
 	private gitHubEventTransport: GitHubEventTransport | null = null; // GitHub event transport for forwarded GitHub webhooks
@@ -2618,6 +2636,11 @@ ${taskSection}`;
 			}
 		}
 
+		// Reap any remaining pre-warmed instances so their subprocesses don't
+		// outlive the process (would otherwise leak until OS reaps them on
+		// process exit, and re-spawn on the next restart's pre-warm).
+		this.reapAllWarmInstances();
+
 		// Clear event transport (no explicit cleanup needed, routes are removed when server stops)
 		this.linearEventTransport = null;
 		this.configUpdater = null;
@@ -3390,6 +3413,10 @@ ${taskSection}`;
 				`Stopping agent runner for ${message.workItemIdentifier} (issue terminal)`,
 			);
 			this.agentSessionManager.requestSessionStop(session.id);
+			// Reap any pre-warmed instance for this session so its subprocess
+			// doesn't outlive the issue (terminal sessions never receive a
+			// follow-up prompt → the warm instance would otherwise leak).
+			this.reapWarmInstance(session.id);
 			session.agentRunner?.stop();
 		}
 
@@ -6508,6 +6535,13 @@ ${input.userComment}
 			const warmSession = this.warmInstances.get(sessionId);
 			if (warmSession) {
 				this.warmInstances.delete(sessionId);
+				// Cancel the idle-expiry timer — the instance is now consumed
+				// and ownership has transferred to the live runner.
+				const timer = this.warmInstanceExpiryTimers.get(sessionId);
+				if (timer) {
+					clearTimeout(timer);
+					this.warmInstanceExpiryTimers.delete(sessionId);
+				}
 				(
 					result.config as AgentRunnerConfig & { warmSession?: WarmQuery }
 				).warmSession = warmSession;
@@ -6732,9 +6766,20 @@ ${input.userComment}
 	private async warmupRecentSessions(count = 30): Promise<void> {
 		const allSessions = this.agentSessionManager.getAllSessions();
 
-		// Only warm Claude sessions that have a persisted session ID and a workspace path
+		// Only warm Claude sessions that have a persisted session ID and a
+		// workspace path. Skip sessions in a terminal status (Complete/Error):
+		// they will never receive a follow-up prompt, so warming them creates
+		// an orphan subprocess that can never be consumed or reaped (the
+		// warm-instance leak — a terminal session's Linear thread is closed,
+		// no future agentSessionPrompted will route to it).
 		const candidates = allSessions
-			.filter((s) => s.claudeSessionId && s.workspace?.path)
+			.filter(
+				(s) =>
+					s.claudeSessionId &&
+					s.workspace?.path &&
+					s.status !== AgentSessionStatus.Complete &&
+					s.status !== AgentSessionStatus.Error,
+			)
 			.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
 			.slice(0, count);
 
@@ -6832,6 +6877,7 @@ ${input.userComment}
 					});
 
 					this.warmInstances.set(session.id, warm);
+					this.scheduleWarmInstanceExpiry(session.id);
 					this.logger.info(
 						`Pre-warmed session ${session.id} (${session.issueContext?.issueIdentifier ?? "unknown"})`,
 					);
@@ -6844,6 +6890,67 @@ ${input.userComment}
 		this.logger.info(
 			`Session pre-warm complete: ${this.warmInstances.size} sessions ready`,
 		);
+	}
+
+	/**
+	 * Schedule idle-expiry reaping for a pre-warmed instance. If no matching
+	 * follow-up prompt arrives within {@link WARM_INSTANCE_IDLE_TTL_MS}, the
+	 * warm subprocess is killed via `close()` and evicted from
+	 * {@link warmInstances}. This bounds the lifetime of unconsumed warm
+	 * instances so they cannot leak for the whole process lifetime or
+	 * re-establish across restarts.
+	 */
+	private scheduleWarmInstanceExpiry(sessionId: string): void {
+		// Clear any prior timer (e.g. re-warm of the same session id).
+		const prior = this.warmInstanceExpiryTimers.get(sessionId);
+		if (prior) clearTimeout(prior);
+
+		const timer = setTimeout(() => {
+			this.reapWarmInstance(sessionId);
+		}, WARM_INSTANCE_IDLE_TTL_MS);
+		// Don't keep the Node process alive solely for this timer.
+		timer.unref();
+		this.warmInstanceExpiryTimers.set(sessionId, timer);
+	}
+
+	/**
+	 * Reap a single warm instance: kill its subprocess and evict it. Safe to
+	 * call for a session id that is no longer warm (no-op).
+	 */
+	private reapWarmInstance(sessionId: string): void {
+		const warm = this.warmInstances.get(sessionId);
+		if (!warm) {
+			this.warmInstanceExpiryTimers.delete(sessionId);
+			return;
+		}
+		try {
+			warm.close();
+		} catch (err) {
+			this.logger.debug(
+				`Error closing warm instance for session ${sessionId}:`,
+				err,
+			);
+		}
+		this.warmInstances.delete(sessionId);
+		const timer = this.warmInstanceExpiryTimers.get(sessionId);
+		if (timer) {
+			clearTimeout(timer);
+			this.warmInstanceExpiryTimers.delete(sessionId);
+		}
+		this.logger.info(
+			`Reaped idle warm instance for session ${sessionId} (no prompt within ${WARM_INSTANCE_IDLE_TTL_MS}ms)`,
+		);
+	}
+
+	/**
+	 * Reap ALL warm instances (kill subprocesses + clear timers). Called on
+	 * shutdown and when a session reaches a terminal state so its warm
+	 * counterpart (if any) is torn down rather than orphaned.
+	 */
+	private reapAllWarmInstances(): void {
+		for (const sessionId of [...this.warmInstances.keys()]) {
+			this.reapWarmInstance(sessionId);
+		}
 	}
 
 	/**
