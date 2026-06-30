@@ -4919,11 +4919,18 @@ ${taskSection}`;
 				// Reserve INSIDE the lock so check-and-reserve is atomic by
 				// construction — not merely by the promise-ordering that holds
 				// when reserving after runExclusive() returns (which a future
-				// `await` between the call and the reserve could break). The
-				// matching delete runs in the finally below; by then the session
-				// has long since registered Active in initializeAgentRunner
-				// (which marks it Active before its first await), so the
-				// reservation hands off cleanly to the active-session check.
+				// `await` between the call and the reserve could break).
+				//
+				// The reservation is held for the ENTIRE init window: it is
+				// added here and only removed in the finally after
+				// initializeAgentRunner fully resolves. So the exact moment the
+				// session is marked Active inside init is irrelevant — a
+				// concurrent webhook arriving any time mid-init folds in via the
+				// isIssueInitializing check, and once init resolves the session
+				// is registered Active so the active-session check takes over.
+				// (Do NOT rewrite this to depend on when init marks the session
+				// Active; the guarantee is the reservation lifetime, not the
+				// marking order.)
 				if (action.action === "create") {
 					this.issuesInitializing.add(dedupIssueId);
 				}
