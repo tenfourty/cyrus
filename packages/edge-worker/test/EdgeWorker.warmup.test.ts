@@ -353,13 +353,7 @@ describe("EdgeWorker - warm instance leak prevention", () => {
 
 		// Simulate the consume path (buildAgentRunnerConfig attaches the warm session).
 		(edgeWorker as any).warmInstances.delete("sess-consumed");
-		const timer = (edgeWorker as any).warmInstanceExpiryTimers.get(
-			"sess-consumed",
-		);
-		if (timer) {
-			clearTimeout(timer);
-			(edgeWorker as any).warmInstanceExpiryTimers.delete("sess-consumed");
-		}
+		(edgeWorker as any).cancelWarmInstanceExpiry("sess-consumed");
 
 		// Advance past TTL — close() must NOT fire because the instance was
 		// consumed (ownership transferred to the live runner).
