@@ -203,9 +203,16 @@ type CyrusToolsMcpContext = {
  * cannot leak for the whole process lifetime or re-establish itself across
  * restarts. Override with CYRUS_WARM_INSTANCE_TTL_MS.
  */
-const WARM_INSTANCE_IDLE_TTL_MS =
-	Number.parseInt(process.env.CYRUS_WARM_INSTANCE_TTL_MS ?? "", 10) ||
-	10 * 60 * 1000; // 10 min default
+const WARM_INSTANCE_IDLE_TTL_MS = (() => {
+	const parsed = Number.parseInt(
+		process.env.CYRUS_WARM_INSTANCE_TTL_MS ?? "",
+		10,
+	);
+	// Guard against nonsensical values: 0, negative, or NaN all fall back to
+	// the 10-min default. A negative value would otherwise make the expiry
+	// timer fire immediately, reaping every warm instance at spawn.
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000; // 10 min default
+})();
 
 /**
  * Unified edge worker that **orchestrates**
@@ -6536,12 +6543,10 @@ ${input.userComment}
 			if (warmSession) {
 				this.warmInstances.delete(sessionId);
 				// Cancel the idle-expiry timer — the instance is now consumed
-				// and ownership has transferred to the live runner.
-				const timer = this.warmInstanceExpiryTimers.get(sessionId);
-				if (timer) {
-					clearTimeout(timer);
-					this.warmInstanceExpiryTimers.delete(sessionId);
-				}
+				// and ownership has transferred to the live runner (don't call
+				// reapWarmInstance: that would close() the subprocess we just
+				// handed off).
+				this.cancelWarmInstanceExpiry(sessionId);
 				(
 					result.config as AgentRunnerConfig & { warmSession?: WarmQuery }
 				).warmSession = warmSession;
@@ -6771,14 +6776,17 @@ ${input.userComment}
 		// they will never receive a follow-up prompt, so warming them creates
 		// an orphan subprocess that can never be consumed or reaped (the
 		// warm-instance leak — a terminal session's Linear thread is closed,
-		// no future agentSessionPrompted will route to it).
+		// no future agentSessionPrompted will route to it). Stale sessions are
+		// also skipped: they are unlikely to receive a follow-up prompt and
+		// would otherwise be warmed only to sit idle until the TTL reaps them.
 		const candidates = allSessions
 			.filter(
 				(s) =>
 					s.claudeSessionId &&
 					s.workspace?.path &&
 					s.status !== AgentSessionStatus.Complete &&
-					s.status !== AgentSessionStatus.Error,
+					s.status !== AgentSessionStatus.Error &&
+					s.status !== AgentSessionStatus.Stale,
 			)
 			.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
 			.slice(0, count);
@@ -6902,8 +6910,7 @@ ${input.userComment}
 	 */
 	private scheduleWarmInstanceExpiry(sessionId: string): void {
 		// Clear any prior timer (e.g. re-warm of the same session id).
-		const prior = this.warmInstanceExpiryTimers.get(sessionId);
-		if (prior) clearTimeout(prior);
+		this.cancelWarmInstanceExpiry(sessionId);
 
 		const timer = setTimeout(() => {
 			this.reapWarmInstance(sessionId);
@@ -6914,13 +6921,26 @@ ${input.userComment}
 	}
 
 	/**
+	 * Cancel (clear) the idle-expiry timer for a session without touching the
+	 * warm instance itself. Used when ownership of the instance transfers to
+	 * a live runner (consume path) or when re-scheduling.
+	 */
+	private cancelWarmInstanceExpiry(sessionId: string): void {
+		const timer = this.warmInstanceExpiryTimers.get(sessionId);
+		if (timer) {
+			clearTimeout(timer);
+			this.warmInstanceExpiryTimers.delete(sessionId);
+		}
+	}
+
+	/**
 	 * Reap a single warm instance: kill its subprocess and evict it. Safe to
 	 * call for a session id that is no longer warm (no-op).
 	 */
 	private reapWarmInstance(sessionId: string): void {
 		const warm = this.warmInstances.get(sessionId);
+		this.cancelWarmInstanceExpiry(sessionId);
 		if (!warm) {
-			this.warmInstanceExpiryTimers.delete(sessionId);
 			return;
 		}
 		try {
@@ -6932,11 +6952,6 @@ ${input.userComment}
 			);
 		}
 		this.warmInstances.delete(sessionId);
-		const timer = this.warmInstanceExpiryTimers.get(sessionId);
-		if (timer) {
-			clearTimeout(timer);
-			this.warmInstanceExpiryTimers.delete(sessionId);
-		}
 		this.logger.info(
 			`Reaped idle warm instance for session ${sessionId} (no prompt within ${WARM_INSTANCE_IDLE_TTL_MS}ms)`,
 		);
