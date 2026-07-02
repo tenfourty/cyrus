@@ -1,4 +1,8 @@
-import type { EdgeWorkerConfig, RunnerType } from "cyrus-core";
+import type {
+	EdgeWorkerConfig,
+	FallbackModelConfig,
+	RunnerType,
+} from "cyrus-core";
 import { normalizeFallbackModel } from "cyrus-core";
 
 export class RunnerSelectionService {
@@ -66,6 +70,31 @@ export class RunnerSelectionService {
 			return this.config.cursorDefaultModel || "composer-2";
 		}
 		return this.config.codexDefaultModel || "gpt-5.5";
+	}
+
+	/**
+	 * The fallback the operator *explicitly configured* for this runner (global
+	 * scope), or undefined when unset. Unlike getDefaultFallbackModelForRunner,
+	 * this bakes in NO hardcoded default — so callers can rank explicit config
+	 * above the model-inferred fallback. Returns the raw config value (single
+	 * model or chain); the caller normalizes.
+	 */
+	public getConfiguredFallbackModelForRunner(
+		runnerType: RunnerType,
+	): FallbackModelConfig | undefined {
+		if (runnerType === "claude") {
+			// Prefer the current key; fall through to the legacy key only when the
+			// current one is unset/blank (an empty array normalizes to undefined).
+			if (normalizeFallbackModel(this.config.claudeDefaultFallbackModel)) {
+				return this.config.claudeDefaultFallbackModel;
+			}
+			return this.config.defaultFallbackModel;
+		}
+		if (runnerType === "cursor") {
+			return this.config.cursorDefaultFallbackModel;
+		}
+		// gemini/codex have no configurable global fallback field today.
+		return undefined;
 	}
 
 	/**

@@ -13,6 +13,7 @@ import type {
 import type {
 	AgentRunnerConfig,
 	CyrusAgentSession,
+	FallbackModelConfig,
 	ILogger,
 	OnAskUserQuestion,
 	RepositoryConfig,
@@ -63,6 +64,16 @@ export interface IRunnerSelector {
 	};
 	getDefaultModelForRunner(runnerType: RunnerType): string;
 	getDefaultFallbackModelForRunner(runnerType: RunnerType): string;
+	/**
+	 * The fallback the user *explicitly configured* for this runner (global
+	 * scope), or undefined when unset. Distinct from
+	 * getDefaultFallbackModelForRunner, which also bakes in the hardcoded
+	 * per-runner default — this returns only what the operator set, so the
+	 * builder can rank explicit config above the model-inferred fallback.
+	 */
+	getConfiguredFallbackModelForRunner?(
+		runnerType: RunnerType,
+	): FallbackModelConfig | undefined;
 }
 
 /**
@@ -414,14 +425,22 @@ export class RunnerConfigBuilder {
 			appendSystemPrompt: appendCloudRuntimeAddendum(
 				appendBrowserUseAddendum(appendFailureModeAddendum(input.systemPrompt)),
 			),
-			// Priority order: label override > repository config > global default.
+			// Priority: explicit per-repo config > explicit global config >
+			// model-inferred fallback (fallbackModelOverride, which the selector
+			// always derives from the model) > hardcoded per-runner default.
+			// Explicit config must outrank inference — otherwise a configured
+			// chain (the whole point of list-valued fallback) never reaches the
+			// SDK, since the inferred override is always set for Claude.
 			// normalizeFallbackModel collapses chains to the comma form and maps
-			// empty/blank values to undefined so `??` falls through correctly (an
+			// empty/blank/[] to undefined so `??` falls through correctly (an
 			// empty array is otherwise truthy and would mask lower-priority config).
 			model: finalModel,
 			fallbackModel:
-				normalizeFallbackModel(fallbackModelOverride) ??
 				normalizeFallbackModel(input.repository.fallbackModel) ??
+				normalizeFallbackModel(
+					this.runnerSelector.getConfiguredFallbackModelForRunner?.(runnerType),
+				) ??
+				normalizeFallbackModel(fallbackModelOverride) ??
 				this.runnerSelector.getDefaultFallbackModelForRunner(runnerType),
 			logger: log,
 			hooks,

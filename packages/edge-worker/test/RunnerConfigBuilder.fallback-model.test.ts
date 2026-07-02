@@ -28,6 +28,7 @@ function makeBuilder(
 		determineRunnerSelection: () => ({ runnerType: "claude" as const }),
 		getDefaultModelForRunner: () => "opus",
 		getDefaultFallbackModelForRunner: () => "sonnet",
+		getConfiguredFallbackModelForRunner: () => undefined,
 		...selectorOverrides,
 	};
 	return new RunnerConfigBuilder(
@@ -100,14 +101,50 @@ describe("RunnerConfigBuilder fallbackModel resolution", () => {
 		expect(buildFallbackModel(makeRepository([]))).toBe("sonnet");
 	});
 
-	it("prefers a selector/label override chain over the per-repo config", () => {
+	// The runner selector ALWAYS derives a fallbackModelOverride from the model
+	// (inferFallbackModel: sonnet→haiku, unknown→sonnet). That derived default
+	// must NOT shadow fallback the user explicitly configured — otherwise a
+	// configured chain never reaches the SDK. Explicit config wins.
+	it("prefers an explicit per-repo chain over the model-inferred fallback", () => {
 		expect(
 			buildFallbackModel(makeRepository(["minimax", "haiku"]), {
 				determineRunnerSelection: () => ({
 					runnerType: "claude" as const,
-					fallbackModelOverride: "opus",
+					fallbackModelOverride: "haiku", // inferred from the model
 				}),
 			}),
-		).toBe("opus");
+		).toBe("minimax,haiku");
+	});
+
+	it("prefers an explicit global chain over the model-inferred fallback", () => {
+		expect(
+			buildFallbackModel(makeRepository(), {
+				determineRunnerSelection: () => ({
+					runnerType: "claude" as const,
+					fallbackModelOverride: "haiku", // inferred from the model
+				}),
+				getConfiguredFallbackModelForRunner: () => ["glm-fallback", "minimax"],
+			}),
+		).toBe("glm-fallback,minimax");
+	});
+
+	it("per-repo config outranks a configured global chain", () => {
+		expect(
+			buildFallbackModel(makeRepository(["repo-a", "repo-b"]), {
+				getConfiguredFallbackModelForRunner: () => ["global-a", "global-b"],
+			}),
+		).toBe("repo-a,repo-b");
+	});
+
+	it("uses the model-inferred fallback when nothing is configured", () => {
+		expect(
+			buildFallbackModel(makeRepository(), {
+				determineRunnerSelection: () => ({
+					runnerType: "claude" as const,
+					fallbackModelOverride: "haiku",
+				}),
+				getConfiguredFallbackModelForRunner: () => undefined,
+			}),
+		).toBe("haiku");
 	});
 });

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- The fallback model setting now accepts an ordered list, so a session can fall through more than one alternate model when the primary is overloaded or unavailable. Set `fallbackModel` (per repository) or `claudeDefaultFallbackModel` (global default) to an array such as `["model-b", "model-c"]` and each is tried in turn within the same turn until one responds — useful when your primary and its single fallback share an endpoint that can saturate together. A single string still works exactly as before.
+- The fallback model setting now accepts an ordered list, so a session can fall through more than one alternate model when the primary is overloaded or unavailable. Set `fallbackModel` (per repository) or `claudeDefaultFallbackModel` (global default) to an array such as `["model-b", "model-c"]` and each is tried in turn within the same turn until one responds — useful when your primary and its single fallback share an endpoint that can saturate together. A configured fallback (single or list) now reliably takes precedence over the model-derived default, so what you set is what the session uses. A single string still works exactly as before.
 
 ### Fixed
 - Forwarded and shared Slack messages are now included when you @mention Cyrus. Previously, forwarding a message (for example a Sentry alert) into a channel and @mentioning Cyrus passed along only your typed comment — the forwarded message's contents were dropped, so a forward with no comment gave Cyrus nothing to work with. The forwarded content is now part of the prompt. ([#1326](https://github.com/cyrusagents/cyrus/pull/1326))
