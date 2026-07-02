@@ -86,6 +86,9 @@ All notable changes to this project will be documented in this file.
 - Git commands (`add`, `commit`, `merge`, etc.) no longer fail with "Operation not permitted" in multi-repo workspaces when running under a sandboxed agent (e.g. the Codex runner). Each repository's git metadata directory is now granted write access, not just the workspace container.
 - Forwarded and shared Slack messages are now included when you @mention Cyrus. Previously, forwarding a message (for example a Sentry alert) into a channel and @mentioning Cyrus passed along only your typed comment — the forwarded message's contents were dropped, so a forward with no comment gave Cyrus nothing to work with. The forwarded content is now part of the prompt. ([#1326](https://github.com/cyrusagents/cyrus/pull/1326))
 
+### Security
+- Patched the tracked Cyrus CLI Bun lockfile so both `pnpm audit` and `bun audit` report no known vulnerabilities. ([CYPACK-1356](https://linear.app/ceedar/issue/CYPACK-1356), [#1353](https://github.com/cyrusagents/cyrus/pull/1353))
+
 ## [0.2.66] - 2026-06-19
 
 ### Security
