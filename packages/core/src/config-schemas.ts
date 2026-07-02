@@ -304,7 +304,10 @@ export const RepositoryConfigSchema = z.object({
 	mcpConfigPath: z.union([z.string(), z.array(z.string())]).optional(),
 	appendInstruction: z.string().optional(),
 	model: z.string().optional(),
-	fallbackModel: z.string().optional(),
+	// A single model name/alias, or an ordered chain tried in turn when the
+	// primary is overloaded/unavailable. Chains are joined with commas at the
+	// SDK boundary (see normalizeFallbackModel).
+	fallbackModel: z.union([z.string(), z.array(z.string())]).optional(),
 
 	// Label-based system prompt configuration
 	labelPrompts: LabelPromptsSchema.optional(),
@@ -344,8 +347,14 @@ export const EdgeConfigSchema = z.object({
 	/** Default Claude model to use across all repositories (e.g., "opus", "sonnet", "haiku") */
 	claudeDefaultModel: z.string().optional(),
 
-	/** Default Claude fallback model if primary Claude model is unavailable */
-	claudeDefaultFallbackModel: z.string().optional(),
+	/**
+	 * Default Claude fallback model if the primary Claude model is unavailable.
+	 * A single model name/alias, or an ordered chain (tried in turn) expressed
+	 * as an array.
+	 */
+	claudeDefaultFallbackModel: z
+		.union([z.string(), z.array(z.string())])
+		.optional(),
 
 	/** Default Gemini model to use across all repositories (e.g., "gemini-2.5-pro") */
 	geminiDefaultModel: z.string().optional(),
@@ -376,7 +385,7 @@ export const EdgeConfigSchema = z.object({
 	 * @deprecated Use claudeDefaultFallbackModel instead.
 	 * Legacy field retained for backwards compatibility and migrated on load.
 	 */
-	defaultFallbackModel: z.string().optional(),
+	defaultFallbackModel: z.union([z.string(), z.array(z.string())]).optional(),
 
 	/** Optional path to global setup script that runs for all repositories */
 	global_setup_script: z.string().optional(),

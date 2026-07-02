@@ -18,6 +18,7 @@ import type {
 	RepositoryConfig,
 	RunnerType,
 } from "cyrus-core";
+import { normalizeFallbackModel } from "cyrus-core";
 import { buildIntentToAddHook } from "./hooks/IntentToAddHook.js";
 import { buildPrMarkerHook } from "./hooks/PrMarkerHook.js";
 import { appendBrowserUseAddendum } from "./prompts/browserUsePromptAddendum.js";
@@ -413,11 +414,14 @@ export class RunnerConfigBuilder {
 			appendSystemPrompt: appendCloudRuntimeAddendum(
 				appendBrowserUseAddendum(appendFailureModeAddendum(input.systemPrompt)),
 			),
-			// Priority order: label override > repository config > global default
+			// Priority order: label override > repository config > global default.
+			// normalizeFallbackModel collapses chains to the comma form and maps
+			// empty/blank values to undefined so `??` falls through correctly (an
+			// empty array is otherwise truthy and would mask lower-priority config).
 			model: finalModel,
 			fallbackModel:
-				fallbackModelOverride ||
-				input.repository.fallbackModel ||
+				normalizeFallbackModel(fallbackModelOverride) ??
+				normalizeFallbackModel(input.repository.fallbackModel) ??
 				this.runnerSelector.getDefaultFallbackModelForRunner(runnerType),
 			logger: log,
 			hooks,

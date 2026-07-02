@@ -92,7 +92,17 @@
 			"type": "string"
 		},
 		"fallbackModel": {
-			"type": "string"
+			"anyOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			]
 		},
 		"labelPrompts": {
 			"type": "object",

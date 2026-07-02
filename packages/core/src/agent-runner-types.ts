@@ -471,7 +471,13 @@ export interface AgentRunnerConfig {
 	mcpConfig?: Record<string, McpServerConfig>;
 	/** AI model to use (e.g., "opus", "sonnet", "haiku") */
 	model?: string;
-	/** Fallback model if primary is unavailable */
+	/**
+	 * Fallback model if the primary is unavailable. The generic runner contract
+	 * is a single resolved model — chains are a Claude-specific capability, so
+	 * the edge worker collapses any configured chain to one value before it
+	 * reaches non-Claude runners. ClaudeRunnerConfig widens this to accept an
+	 * ordered list (see cyrus-claude-runner) and joins it at the SDK boundary.
+	 */
 	fallbackModel?: string;
 	/** Maximum number of turns before completing session */
 	maxTurns?: number;
