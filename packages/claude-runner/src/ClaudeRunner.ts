@@ -27,6 +27,7 @@ import {
 	type IAgentRunner,
 	type ILogger,
 	LogLevel,
+	normalizeFallbackModel,
 	StreamingPrompt,
 } from "cyrus-core";
 import dotenv from "dotenv";
@@ -529,7 +530,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			resumeSessionId: this.config.resumeSessionId,
 			workingDirectory: this.config.workingDirectory,
 			model: this.config.model,
-			fallbackModel: this.config.fallbackModel,
+			fallbackModel: normalizeFallbackModel(this.config.fallbackModel),
 		});
 		this.logger.debug("Working directory:", this.config.workingDirectory);
 
@@ -737,7 +738,8 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					prompt: promptForQuery,
 					options: {
 						model: this.config.model || "opus",
-						fallbackModel: this.config.fallbackModel || "sonnet",
+						fallbackModel:
+							normalizeFallbackModel(this.config.fallbackModel) || "sonnet",
 						abortController: this.abortController,
 						// Use Claude Code preset by default to maintain backward compatibility
 						// This can be overridden if systemPrompt is explicitly provided

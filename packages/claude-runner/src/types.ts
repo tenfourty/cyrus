@@ -14,7 +14,11 @@ import type {
 	SessionStore,
 	WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ILogger, OnAskUserQuestion } from "cyrus-core";
+import type {
+	FallbackModelConfig,
+	ILogger,
+	OnAskUserQuestion,
+} from "cyrus-core";
 
 export type { OnAskUserQuestion } from "cyrus-core";
 
@@ -43,7 +47,10 @@ export interface ClaudeRunnerConfig {
 	mcpConfigPath?: string | string[]; // Single path or array of paths to compose
 	mcpConfig?: Record<string, McpServerConfig>; // Additional/override MCP servers
 	model?: string; // Claude model to use (e.g., "opus", "sonnet", "haiku")
-	fallbackModel?: string; // Fallback model if primary model is unavailable
+	// Fallback model if the primary is unavailable. A single model name/alias,
+	// or an ordered chain (tried in turn) as an array — joined with commas at
+	// the SDK boundary via normalizeFallbackModel.
+	fallbackModel?: FallbackModelConfig;
 	maxTurns?: number; // Maximum number of turns before completing the session
 	tools?: string[]; // Built-in tools available in model context (empty array disables all tools)
 	cyrusHome: string; // Cyrus home directory
