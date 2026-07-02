@@ -39,3 +39,40 @@ describe("RunnerSelectionService.getDefaultFallbackModelForRunner (claude)", () 
 		expect(service.getDefaultFallbackModelForRunner("claude")).toBe("sonnet");
 	});
 });
+
+describe("RunnerSelectionService.getConfiguredFallbackModelForRunner", () => {
+	it("returns the raw configured claude global chain", () => {
+		const service = serviceWith({
+			claudeDefaultFallbackModel: ["minimax", "haiku"],
+		});
+		expect(service.getConfiguredFallbackModelForRunner("claude")).toEqual([
+			"minimax",
+			"haiku",
+		]);
+	});
+
+	it("returns undefined for claude when nothing is configured (no hardcoded default)", () => {
+		expect(
+			serviceWith({}).getConfiguredFallbackModelForRunner("claude"),
+		).toBeUndefined();
+	});
+
+	it("falls through a blank current key to the deprecated key", () => {
+		const service = serviceWith({
+			claudeDefaultFallbackModel: [],
+			defaultFallbackModel: "legacy-model",
+		});
+		expect(service.getConfiguredFallbackModelForRunner("claude")).toBe(
+			"legacy-model",
+		);
+	});
+
+	it("returns undefined for runners without a configurable global fallback", () => {
+		expect(
+			serviceWith({}).getConfiguredFallbackModelForRunner("gemini"),
+		).toBeUndefined();
+		expect(
+			serviceWith({}).getConfiguredFallbackModelForRunner("codex"),
+		).toBeUndefined();
+	});
+});
