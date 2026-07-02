@@ -1,17 +1,5 @@
 // Logging
 
-// Telemetry
-export {
-	type ClaudeProviderExtras,
-	type ClaudeTelemetry,
-	type CodexTelemetry,
-	type CursorTelemetry,
-	formatTelemetryFooter,
-	type GeminiTelemetry,
-	type RunnerTelemetryBase,
-	type RunnerTelemetryRecord,
-} from "./RunnerTelemetry.js";
-
 // Error reporting
 export type {
 	ErrorReporter,
@@ -34,6 +22,17 @@ export type {
 	LogEventAttributes,
 } from "./logging/index.js";
 export { createLogger, LogLevel } from "./logging/index.js";
+// Telemetry
+export {
+	type ClaudeProviderExtras,
+	type ClaudeTelemetry,
+	type CodexTelemetry,
+	type CursorTelemetry,
+	formatTelemetryFooter,
+	type GeminiTelemetry,
+	type RunnerTelemetryBase,
+	type RunnerTelemetryRecord,
+} from "./RunnerTelemetry.js";
 
 // export { Session } from './Session.js'
 // export type { SessionOptions, , NarrativeItem } from './Session.js'
@@ -128,6 +127,8 @@ export {
 	getDefaultReposDir,
 	getDefaultWorktreesDir,
 } from "./constants.js";
+export type { FallbackModelConfig } from "./fallback-model.js";
+export { normalizeFallbackModel } from "./fallback-model.js";
 // Issue Tracker Abstraction
 export type {
 	AgentActivity,

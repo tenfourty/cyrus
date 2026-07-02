@@ -1,4 +1,5 @@
 import type { EdgeWorkerConfig, RunnerType } from "cyrus-core";
+import { normalizeFallbackModel } from "cyrus-core";
 
 export class RunnerSelectionService {
 	private config: EdgeWorkerConfig;
@@ -73,9 +74,11 @@ export class RunnerSelectionService {
 	 */
 	public getDefaultFallbackModelForRunner(runnerType: RunnerType): string {
 		if (runnerType === "claude") {
+			// Either global may be a single model or an ordered chain; collapse to
+			// the comma form and fall through blanks/empty arrays via `??`.
 			return (
-				this.config.claudeDefaultFallbackModel ||
-				this.config.defaultFallbackModel ||
+				normalizeFallbackModel(this.config.claudeDefaultFallbackModel) ??
+				normalizeFallbackModel(this.config.defaultFallbackModel) ??
 				"sonnet"
 			);
 		}
