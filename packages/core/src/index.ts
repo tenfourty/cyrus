@@ -46,6 +46,7 @@ export type {
 	IMessageFormatter,
 	McpServerConfig,
 	OnAskUserQuestion,
+	RunnerTerminationInfo,
 	SDKAssistantMessage,
 	SDKAssistantMessageError,
 	SDKMessage,

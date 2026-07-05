@@ -543,6 +543,68 @@ describe("ClaudeRunner", () => {
 		});
 	});
 
+	describe("onTerminated wiring", () => {
+		it("should register onTerminated callback if provided", () => {
+			const onTerminated = vi.fn();
+			const runnerWithCallback = new ClaudeRunner({
+				...defaultConfig,
+				onTerminated,
+			});
+
+			const info = { reason: "sigterm" as const, requested: false as const };
+			runnerWithCallback.emit("terminated", info);
+			expect(onTerminated).toHaveBeenCalledWith(info);
+		});
+
+		it("fires onTerminated with reason sigterm when the process exits unrequested", async () => {
+			const onTerminated = vi.fn();
+			const errorHandler = vi.fn();
+			const unrequestedRunner = new ClaudeRunner({
+				...defaultConfig,
+				onTerminated,
+			});
+			unrequestedRunner.on("error", errorHandler);
+
+			// biome-ignore lint/correctness/useYield: This is just mocked for testing
+			mockQuery.mockImplementation(async function* () {
+				throw new Error("Claude Code process exited with code 143");
+			});
+
+			await unrequestedRunner.start("test");
+
+			expect(onTerminated).toHaveBeenCalledWith({
+				reason: "sigterm",
+				requested: false,
+			});
+			expect(errorHandler).not.toHaveBeenCalled();
+		});
+
+		it("does NOT fire onTerminated when the same exit is preceded by stop()", async () => {
+			const onTerminated = vi.fn();
+			const stoppedRunner = new ClaudeRunner({
+				...defaultConfig,
+				onTerminated,
+			});
+
+			mockQuery.mockImplementation(async function* ({ options }) {
+				await new Promise((_resolve, reject) => {
+					options.abortController.signal.addEventListener("abort", () =>
+						reject(new Error("Claude Code process exited with code 143")),
+					);
+				});
+			});
+
+			const startPromise = stoppedRunner.start("test");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			stoppedRunner.stop();
+
+			await startPromise;
+
+			expect(onTerminated).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("Session Info", () => {
 		it("should return null session info when not running", () => {
 			expect(runner.getSessionInfo()).toBeNull();

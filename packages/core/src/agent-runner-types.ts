@@ -27,6 +27,13 @@ import type { ILogger } from "./logging/ILogger.js";
  */
 export type AskUserQuestionInput = SDKAskUserQuestionInput;
 
+/** Payload for AgentRunnerConfig.onTerminated. `requested` is always false —
+ * a requested stop is not reported here. */
+export interface RunnerTerminationInfo {
+	reason: "abort" | "sigterm";
+	requested: false;
+}
+
 // ============================================================================
 // PENDING WORK TYPES
 // ============================================================================
@@ -525,6 +532,12 @@ export interface AgentRunnerConfig {
 	onError?: (error: Error) => void | Promise<void>;
 	/** Callback when session completes */
 	onComplete?: (messages: AgentMessage[]) => void | Promise<void>;
+	/**
+	 * Callback fired when the runner terminates OUT OF BAND — an unrequested
+	 * exit (crash / OOM / external SIGTERM), NOT a stop() the caller initiated.
+	 * Lets the host reconcile a session whose runner died without a result.
+	 */
+	onTerminated?: (info: RunnerTerminationInfo) => void | Promise<void>;
 }
 
 /**
