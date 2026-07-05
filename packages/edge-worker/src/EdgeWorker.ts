@@ -6011,11 +6011,17 @@ ${taskSection}`;
 		const sessions = this.agentSessionManager.getSessionsByIssueId(issue.id);
 		const activeThreadCount = sessions.length;
 
-		// Stop all agent runners for this issue
+		// Stop all agent runners for this issue, reconciling each so no session
+		// is left Active with a dead runner and no warm instance leaks. This is a
+		// deliberate divergence from handleIssueStateChangeMessage (which also
+		// removeSession()s) — unassign leaves the session recoverable at Error so
+		// a re-assign / re-ping can resume it.
 		for (const session of sessions) {
 			this.logger.info(`Stopping agent runner for issue ${issue.identifier}`);
 			this.agentSessionManager.requestSessionStop(session.id);
 			session.agentRunner?.stop();
+			await this.agentSessionManager.markSessionStopped(session.id);
+			this.reapWarmInstance(session.id);
 		}
 
 		// Post ONE farewell comment on the issue (not in any thread) if there were active sessions
