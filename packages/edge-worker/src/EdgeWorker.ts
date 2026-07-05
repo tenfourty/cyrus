@@ -5229,7 +5229,10 @@ ${taskSection}`;
 	 * Handle Claude session error
 	 * Silently ignores AbortError (user-initiated stop), logs other errors
 	 */
-	private async handleClaudeError(error: Error): Promise<void> {
+	private async handleClaudeError(
+		error: Error,
+		sessionId?: string,
+	): Promise<void> {
 		// AbortError is expected when user stops Claude process, don't log it
 		// Check by name since the SDK's AbortError class may not match our imported definition
 		const isAbortError =
@@ -5244,6 +5247,36 @@ ${taskSection}`;
 			return;
 		}
 		this.logger.error("Unhandled claude error:", error);
+		// A genuine thrown error leaves the session Active with a dead runner
+		// (the catch already set isRunning=false). Reconcile it so a later
+		// prompt recovers instead of folding into a zombie. Chat sessions pass
+		// no sessionId and are descoped (PR1).
+		if (sessionId) {
+			await this.reconcileTerminatedRunner(sessionId, { reason: "error" });
+		}
+	}
+
+	/**
+	 * Reconcile a session whose runner died out of band (crash/OOM/SIGTERM) or
+	 * threw. Flips the session to Error via the public markSessionStopped, whose
+	 * session_terminal emit triggers the deferred reconcileAndReap (Task 2) to
+	 * stop+clear the runner. Idempotent — safe if the runner already exited.
+	 *
+	 * Takes a plain `{ reason: string }` (for logging only) — NOT the
+	 * RunnerTerminationInfo payload — so both onTerminated (reason
+	 * "abort"/"sigterm") and the genuine-error path (reason "error") call it
+	 * without a cast. RunnerTerminationInfo.reason is assignable to `string`.
+	 */
+	private async reconcileTerminatedRunner(
+		sessionId: string,
+		info: { reason: string },
+	): Promise<void> {
+		const session = this.agentSessionManager.getSession(sessionId);
+		if (!session) return;
+		this.logger.warn(
+			`Runner for session ${sessionId} terminated out of band (${info.reason}); reconciling to Error`,
+		);
+		await this.agentSessionManager.markSessionStopped(sessionId);
 	}
 
 	/**
@@ -6496,7 +6529,8 @@ ${input.userComment}
 			onMessage: (message: SDKMessage) => {
 				this.handleClaudeMessage(sessionId, message, repository.id);
 			},
-			onError: (error: Error) => this.handleClaudeError(error),
+			onError: (error: Error) => this.handleClaudeError(error, sessionId),
+			onTerminated: (info) => this.reconcileTerminatedRunner(sessionId, info),
 			createAskUserQuestionCallback: (sid, wid) =>
 				this.createAskUserQuestionCallback(sid, wid)!,
 			requireLinearWorkspaceId,
