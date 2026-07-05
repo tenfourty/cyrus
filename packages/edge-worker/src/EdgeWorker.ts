@@ -5051,7 +5051,7 @@ ${taskSection}`;
 			} else if (target) {
 				// The target session's runner is dead/absent. Respawn it to
 				// service this comment rather than dropping it (AC#5). Serialize
-				// under the per-issue mutex so two duplicate `created` webbooks
+				// under the per-issue mutex so two duplicate `created` webhooks
 				// can't both resume the same session (resumeAgentSession re-reads
 				// session.agentRunner and streams if a sibling already revived it).
 				const repository = resolveSessionRepository(targetSessionId, {
@@ -6017,11 +6017,17 @@ ${taskSection}`;
 		// removeSession()s) — unassign leaves the session recoverable at Error so
 		// a re-assign / re-ping can resume it.
 		for (const session of sessions) {
-			this.logger.info(`Stopping agent runner for issue ${issue.identifier}`);
-			this.agentSessionManager.requestSessionStop(session.id);
-			session.agentRunner?.stop();
-			await this.agentSessionManager.markSessionStopped(session.id);
-			this.reapWarmInstance(session.id);
+			try {
+				this.logger.info(`Stopping agent runner for issue ${issue.identifier}`);
+				this.agentSessionManager.requestSessionStop(session.id);
+				session.agentRunner?.stop();
+				await this.agentSessionManager.markSessionStopped(session.id);
+				this.reapWarmInstance(session.id);
+			} catch (error) {
+				this.logger.warn(
+					`Failed to reconcile session ${session.id} on unassign: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 
 		// Post ONE farewell comment on the issue (not in any thread) if there were active sessions
