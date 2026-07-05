@@ -206,6 +206,7 @@ import {
 	resolveIssueMcpConfigPath,
 } from "./RunnerConfigBuilder.js";
 import { RunnerSelectionService } from "./RunnerSelectionService.js";
+import { reconcileAndReap } from "./reconcileAndReap.js";
 import { resolveSiblingSkillPlugins } from "./resolveSiblingSkillPlugins.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import {
@@ -613,6 +614,17 @@ export class EdgeWorker extends EventEmitter {
 				this.logger.warn(
 					`Failed to persist state after session ${sessionId} reached terminal status: ${err instanceof Error ? err.message : String(err)}`,
 				);
+			});
+			// Reap a live runner on an abnormal terminal transition — DEFERRED so
+			// it runs after completeSession's stack unwinds (the errored-result
+			// session_terminal fires synchronously mid-completeSession, before
+			// the runner loop clears isRunning). Reaps only Error/Stale, never
+			// Complete (held-open/warm runners are Complete). See spec change #1.
+			setImmediate(() => {
+				reconcileAndReap(sessionId, {
+					getSession: (id) => this.agentSessionManager.getSession(id),
+					reapWarmInstance: (id) => this.reapWarmInstance(id),
+				});
 			});
 		});
 
