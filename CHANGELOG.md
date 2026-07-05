@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- A stuck, crashed, or errored agent session can now be recovered by re-prompting it in Linear — no full restart required. Sessions whose runner died out of band (crash/OOM) or ended on an error (e.g. a gateway 429) are reconciled so a new prompt cleanly starts a fresh runner instead of silently folding into a dead session. Orphaned runner processes from errored sessions are now cleaned up. (To recover one stuck session: **stop it in Linear, then re-prompt** — with warm sessions enabled, send stop twice within 10s to force a full stop rather than an interrupt.)
 
 ## [0.2.67] - 2026-07-25
 
