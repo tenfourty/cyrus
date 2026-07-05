@@ -214,6 +214,7 @@ import {
 	SkillsPluginResolver,
 } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
+import { resolveSessionRepository } from "./sessionRepository.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
@@ -5047,9 +5048,42 @@ ${taskSection}`;
 						`Could not stream duplicate comment into session ${targetSessionId}: ${error instanceof Error ? error.message : String(error)}`,
 					);
 				}
+			} else if (target) {
+				// The target session's runner is dead/absent. Respawn it to
+				// service this comment rather than dropping it (AC#5). Serialize
+				// under the per-issue mutex so two duplicate `created` webbooks
+				// can't both resume the same session (resumeAgentSession re-reads
+				// session.agentRunner and streams if a sibling already revived it).
+				const repository = resolveSessionRepository(targetSessionId, {
+					sessionRepositories: this.sessionRepositories,
+					repositories: this.repositories,
+				});
+				const issueId = target.issueContext?.issueId ?? target.issueId;
+				if (repository && issueId) {
+					try {
+						await this.issueSessionMutex.runExclusive(issueId, async () => {
+							await this.resumeAgentSession(
+								target,
+								repository,
+								targetSessionId,
+								this.agentSessionManager,
+								trimmedComment,
+								"",
+								false,
+								[],
+								linearWorkspaceId,
+							);
+						});
+						delivered = true;
+					} catch (error) {
+						this.logger.warn(
+							`Could not resume dead fold target ${targetSessionId}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
 			}
 			// Fallback: surface the comment in the active session's thread so it
-			// is not lost when the runner can't accept a streamed message.
+			// is not lost when neither streaming nor resume delivered it.
 			if (!delivered) {
 				await this.activityPoster.postThoughtActivity(
 					targetSessionId,
