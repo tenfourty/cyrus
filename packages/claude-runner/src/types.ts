@@ -101,6 +101,10 @@ export interface ClaudeRunnerConfig {
 	onMessage?: (message: SDKMessage) => void | Promise<void>;
 	onError?: (error: Error) => void | Promise<void>;
 	onComplete?: (messages: SDKMessage[]) => void | Promise<void>;
+	/** Fired on an out-of-band (unrequested) runner exit — see AgentRunnerConfig.onTerminated. */
+	onTerminated?: (
+		info: import("cyrus-core").RunnerTerminationInfo,
+	) => void | Promise<void>;
 	/**
 	 * Pre-warmed session from startup() — when set, the first streaming query uses
 	 * this warm instance instead of spawning a cold process (~20x faster first turn).
@@ -135,6 +139,9 @@ export interface ClaudeRunnerEvents {
 	"end-turn": (lastText: string) => void;
 	error: (error: Error) => void | Promise<void>;
 	complete: (messages: SDKMessage[]) => void | Promise<void>;
+	terminated: (
+		info: import("cyrus-core").RunnerTerminationInfo,
+	) => void | Promise<void>;
 }
 
 // Re-export SDK types for convenience

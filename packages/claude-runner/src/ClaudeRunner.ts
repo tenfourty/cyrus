@@ -42,6 +42,7 @@ import {
 	buildBaseSessionEnv,
 	normalizeMcpHttpTransport,
 } from "./session-env.js";
+import { classifyRunnerTermination } from "./termination.js";
 import type {
 	ClaudeRunnerConfig,
 	ClaudeRunnerEvents,
@@ -316,6 +317,10 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	// longer exists, we restart once without `resume`. Reset at the start of
 	// every startWithPrompt() so each turn gets its own one-shot budget.
 	private resumeFreshStartAttempted = false;
+	// Set true by stop(); reset at the top of every startWithPrompt(). Lets the
+	// catch tell a Cyrus-initiated stop from an out-of-band death (both can
+	// surface as an AbortError OR "exited with code 143").
+	private stopRequested = false;
 
 	constructor(config: ClaudeRunnerConfig, keepSessionWarm = false) {
 		super();
@@ -334,6 +339,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		if (config.onMessage) this.on("message", config.onMessage);
 		if (config.onError) this.on("error", config.onError);
 		if (config.onComplete) this.on("complete", config.onComplete);
+		if (config.onTerminated) this.on("terminated", config.onTerminated);
 	}
 
 	/**
@@ -524,6 +530,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		this.pendingBackgroundTasks = [];
 		// Each turn gets one fresh-start-on-failed-resume attempt.
 		this.resumeFreshStartAttempted = false;
+		this.stopRequested = false;
 
 		const isResumed = !!this.config.resumeSessionId;
 		this.logger.event(isResumed ? "session_resumed" : "session_started", {
@@ -1013,33 +1020,27 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				this.sessionInfo.isRunning = false;
 			}
 
-			// Check for user-initiated abort - this is a normal operation, not an error
-			// The SDK throws AbortError when the process is aborted via AbortController
-			// We check by name since the SDK's AbortError class may not match our local definition
-			const isAbortError =
-				error instanceof Error &&
-				(error.name === "AbortError" ||
-					error.message.includes("aborted by user"));
-
-			// Check for SIGTERM (exit code 143 = 128 + 15), which indicates graceful termination
-			// This is expected when the session is stopped during unassignment
-			const isSigterm =
-				error instanceof Error &&
-				error.message.includes("Claude Code process exited with code 143");
-
-			if (isAbortError) {
-				// User-initiated stop - log at info level, not error
+			const termination = classifyRunnerTermination(
+				error instanceof Error ? error : new Error(String(error)),
+				this.stopRequested,
+			);
+			if (termination.kind === "requested") {
+				// Cyrus-initiated stop — log only; EdgeWorker reconciled via handleStopSignal.
 				this.logger.event("session_stopped", {
-					reason: "user_abort",
+					reason: termination.reason,
 					claudeSessionId: this.sessionInfo?.sessionId,
 				});
-			} else if (isSigterm) {
+			} else if (termination.kind === "crashed") {
+				// Out-of-band death — log AND notify so EdgeWorker can reconcile.
 				this.logger.event("session_stopped", {
-					reason: "sigterm",
+					reason: `${termination.reason}_unrequested`,
 					claudeSessionId: this.sessionInfo?.sessionId,
+				});
+				this.emit("terminated", {
+					reason: termination.reason,
+					requested: false,
 				});
 			} else {
-				// Actual error - log and emit
 				this.logger.error("Session error:", error);
 				this.emit(
 					"error",
@@ -1217,6 +1218,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	 * Stop the current Claude session
 	 */
 	stop(): void {
+		this.stopRequested = true;
 		if (this.abortController) {
 			this.logger.event("session_stop_requested", {
 				claudeSessionId: this.sessionInfo?.sessionId,
