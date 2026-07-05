@@ -107,4 +107,15 @@ describe("AgentSessionManager terminal-status emit", () => {
 		expect(events).toEqual([{ sessionId }]);
 	});
 
+	it("markSessionStopped flips an Active session to Error and emits session_terminal", async () => {
+		const terminal = vi.fn();
+		manager.on("session_terminal", terminal);
+
+		await manager.markSessionStopped(sessionId);
+
+		expect(manager.getSession(sessionId)?.status).toBe(
+			AgentSessionStatus.Error,
+		);
+		expect(terminal).toHaveBeenCalledWith({ sessionId });
+	});
 });
