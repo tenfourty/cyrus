@@ -154,6 +154,10 @@ export interface IssueRunnerConfigInput {
 	logger: ILogger;
 	onMessage: (message: SDKMessage) => void | Promise<void>;
 	onError: (error: Error) => void;
+	/** Fired on out-of-band runner death — forwarded to the runner config. */
+	onTerminated?: (
+		info: import("cyrus-core").RunnerTerminationInfo,
+	) => void | Promise<void>;
 	/** Factory to create AskUserQuestion callback (Claude runner only) */
 	createAskUserQuestionCallback?: (
 		sessionId: string,
@@ -603,6 +607,7 @@ export class RunnerConfigBuilder {
 				}),
 			onMessage: input.onMessage,
 			onError: input.onError,
+			onTerminated: input.onTerminated,
 		};
 
 		// Cursor runner uses @cursor/sdk. Pass through API key, the same
