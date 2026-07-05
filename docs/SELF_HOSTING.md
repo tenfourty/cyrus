@@ -325,6 +325,10 @@ For detailed options, see the [Configuration File Reference](./CONFIG_FILE.md).
 - Verify Linear tokens are valid with `cyrus check-tokens`
 - Ensure the issue is assigned to Cyrus in Linear
 
+### Recovering a Stuck Session
+
+If a session's runner crashed out of band or ended on an error (e.g. a gateway 429), just re-prompt the issue in Linear — no restart needed. Cyrus reconciles the dead session before handling the new prompt, so it starts a fresh runner instead of silently folding into the dead one. If the session still looks stuck, **stop it in Linear first, then re-prompt** — with warm sessions enabled (`CYRUS_ENABLE_WARM_SESSIONS=1`), send stop twice within 10s to force a full stop rather than an interrupt.
+
 ### Claude Code Not Working
 
 - Verify your Claude Code credentials are set in the env file
