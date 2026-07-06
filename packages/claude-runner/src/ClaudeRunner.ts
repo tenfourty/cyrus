@@ -313,7 +313,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		const stallCfg = resolveStallConfig(process.env);
 		this.stallWatchdog = new StallWatchdog(
 			{ ...stallCfg, enabled: stallCfg.enabled && !!config.onTerminated },
-			() => this.onStallFired(),
+			(info) => this.onStallFired(info),
 		);
 	}
 
@@ -324,11 +324,16 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	 * timer was about to fire) — bail out rather than aborting a session
 	 * that's no longer running.
 	 */
-	private onStallFired(): void {
+	private onStallFired(info: {
+		budgetMs: number;
+		pendingToolCount: number;
+	}): void {
 		if (!this.sessionInfo?.isRunning) return;
 		this.stalled = true;
 		this.logger.event("session_stalled", {
 			claudeSessionId: this.sessionInfo?.sessionId,
+			budgetMs: info.budgetMs,
+			pendingToolCount: info.pendingToolCount,
 		});
 		this.abortController?.abort();
 	}
