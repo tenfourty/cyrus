@@ -215,6 +215,7 @@ import {
 } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
 import { resolveSessionRepository } from "./sessionRepository.js";
+import { shouldPostTerminalNotice } from "./sessionStatus.js";
 import { shouldAbortSpawn } from "./shouldAbortSpawn.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
@@ -6108,6 +6109,17 @@ ${taskSection}`;
 		this.logger.warn(
 			`Runner for session ${sessionId} terminated out of band (${info.reason}); reconciling to Error`,
 		);
+		// Sample BEFORE markSessionStopped, which flips status unconditionally.
+		// Self-resets across a re-ping: markSessionResuming sets status back to
+		// Active, so a later failure after re-prompting posts again.
+		const preStatus = session.status;
+		const trackerId = session.issueContext?.trackerId;
+		if (shouldPostTerminalNotice(preStatus, trackerId)) {
+			await this.agentSessionManager.createErrorActivity(
+				sessionId,
+				`⚠️ This session stopped unexpectedly and was reset (reason: ${info.reason}). Re-prompt to retry.`,
+			);
+		}
 		await this.agentSessionManager.markSessionStopped(sessionId);
 	}
 
