@@ -159,6 +159,8 @@ describe("EdgeWorker - reconcileTerminatedRunner", () => {
 		expect(mockAgentSessionManager.markSessionStopped).toHaveBeenCalledWith(
 			"session-1",
 		);
+		// Non-stall reasons must never route to markSessionStale.
+		expect(mockAgentSessionManager.markSessionStale).not.toHaveBeenCalled();
 		// The notice must be posted before the status flip so preStatus reads
 		// as non-terminal.
 		const createOrder =
@@ -166,6 +168,37 @@ describe("EdgeWorker - reconcileTerminatedRunner", () => {
 		const stopOrder =
 			mockAgentSessionManager.markSessionStopped.mock.invocationCallOrder[0];
 		expect(createOrder).toBeLessThan(stopOrder);
+	});
+
+	it("posts a stall-specific notice and reconciles to Stale when reason is 'stall'", async () => {
+		mockAgentSessionManager.getSession.mockReturnValue(makeSession());
+
+		await (edgeWorker as any).reconcileTerminatedRunner("session-1", {
+			reason: "stall",
+		});
+
+		expect(mockAgentSessionManager.createErrorActivity).toHaveBeenCalledOnce();
+		const [sessionId, body] =
+			mockAgentSessionManager.createErrorActivity.mock.calls[0];
+		expect(sessionId).toBe("session-1");
+		expect(body).toMatch(/stalled \(no activity\)/);
+		// The stall copy is intentionally generic — no elapsed number, no raw
+		// reason text baked in (unlike the non-stall "reason: <x>" copy).
+		expect(body).not.toMatch(/stopped unexpectedly/);
+
+		expect(mockAgentSessionManager.markSessionStale).toHaveBeenCalledWith(
+			"session-1",
+		);
+		// Stall must route to markSessionStale, never markSessionStopped.
+		expect(mockAgentSessionManager.markSessionStopped).not.toHaveBeenCalled();
+
+		// The notice must be posted before the status flip so preStatus reads
+		// as non-terminal.
+		const createOrder =
+			mockAgentSessionManager.createErrorActivity.mock.invocationCallOrder[0];
+		const staleOrder =
+			mockAgentSessionManager.markSessionStale.mock.invocationCallOrder[0];
+		expect(createOrder).toBeLessThan(staleOrder);
 	});
 
 	it("does NOT post when the pre-flip status is already terminal", async () => {

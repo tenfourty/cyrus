@@ -118,4 +118,17 @@ describe("AgentSessionManager terminal-status emit", () => {
 		);
 		expect(terminal).toHaveBeenCalledWith({ sessionId });
 	});
+
+	it("markSessionStale flips an Active session to Stale and emits session_terminal once", async () => {
+		const terminal = vi.fn();
+		manager.on("session_terminal", terminal);
+
+		await manager.markSessionStale(sessionId);
+
+		expect(manager.getSession(sessionId)?.status).toBe(
+			AgentSessionStatus.Stale,
+		);
+		expect(terminal).toHaveBeenCalledWith({ sessionId });
+		expect(terminal).toHaveBeenCalledTimes(1);
+	});
 });
