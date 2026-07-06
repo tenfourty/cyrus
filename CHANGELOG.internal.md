@@ -4,7 +4,8 @@ This changelog documents internal development changes, refactors, tooling update
 
 ## [Unreleased]
 
-_No internal-only changes._
+### Fixed
+- Turn-resilience polish (follow-up to the unreleased stall-watchdog / elicitation-timeout work): the elicitation-timeout notice now renders sub-minute custom `CYRUS_ELICITATION_TIMEOUT_MS` values as seconds instead of "0 minutes"; dropped a redundant debug log that duplicated the info log in the late-answer drop path; corrected a stale comment on the durable assistant-error capture (it keeps the last *errored* assistant, not the last assistant).
 
 ## [0.2.66] - 2026-06-19
 
