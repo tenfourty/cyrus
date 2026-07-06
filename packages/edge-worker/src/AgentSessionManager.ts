@@ -27,6 +27,7 @@ import {
 	type SerializedCyrusAgentSessionEntry,
 	type Workspace,
 } from "cyrus-core";
+import { isTruncatedTurn } from "./isTruncatedTurn.js";
 import {
 	formatPendingWorkThought,
 	formatScheduleWakeupResponse,
@@ -116,6 +117,14 @@ export class AgentSessionManager extends EventEmitter {
 	private lastAssistantBodyBySession: Map<string, string> = new Map(); // Buffer: last assistant text per session for posting as response on result
 	private lastAssistantBodyIsToolInputBySession: Map<string, boolean> =
 		new Map(); // Whether the buffered body above is a tool_use input JSON (no trailing assistant text) — guards against posting raw JSON as the "response" (CYPACK-1177)
+	// Durable (survives the buffered-assistant-entry discard on "result") capture
+	// of the last assistant message's SDK `error` field for the in-progress turn.
+	// `createSessionEntry` writes it; `completeSession` reads it to detect a
+	// max_output_tokens truncation without needing the buffered entry, which is
+	// discarded before completeSession runs. Cleared at the end of a turn (and
+	// on resume/stop) so a stale value can't fire a spurious note on a later
+	// clean turn.
+	private lastAssistantErrorBySession = new Map<string, string>();
 	private bufferedAssistantEntryBySession: Map<string, CyrusAgentSessionEntry> =
 		new Map(); // One-behind buffer: holds last assistant entry until next message or result
 	private taskSubjectsByToolUseId: Map<string, string> = new Map(); // Cache TaskCreate subjects by toolUseId until result arrives with task ID
@@ -397,6 +406,11 @@ export class AgentSessionManager extends EventEmitter {
 		// "error":"rate_limit" field when usage limits are hit
 		const sdkError =
 			sdkMessage.type === "assistant" ? sdkMessage.error : undefined;
+		// Durable per-session capture: the buffered assistant entry is discarded
+		// (not synced) when the matching "result" message arrives, so without
+		// this, completeSession has no way to see a max_output_tokens error by
+		// the time it runs. Last assistant message of the turn wins.
+		if (sdkError) this.lastAssistantErrorBySession.set(sessionId, sdkError);
 
 		// Determine which runner is being used
 		const session = this.sessions.get(sessionId);
@@ -501,17 +515,52 @@ export class AgentSessionManager extends EventEmitter {
 		// Post a thought AFTER the response so Linear's agent panel returns
 		// to its working state and the user can see what the session is
 		// waiting on.
-		if (resultMessage.subtype === "success") {
-			const pendingWork = this.getRunnerPendingWork(sessionId);
-			if (pendingWork) {
-				const thoughtBody = formatPendingWorkThought(pendingWork);
-				if (thoughtBody) {
-					await this.createThoughtActivity(sessionId, thoughtBody);
-					log.info(
-						`Posted pending-work thought (${pendingWork.sessionCrons.length} crons, ${pendingWork.backgroundTasks.length} background tasks)`,
-					);
-				}
+		//
+		// `pendingWork` also gates the truncation note below: a still-scheduled
+		// turn is legitimately "working", so this thought must stay the LAST
+		// activity and no error note is posted alongside it.
+		const pendingWork =
+			resultMessage.subtype === "success"
+				? this.getRunnerPendingWork(sessionId)
+				: null;
+		if (pendingWork) {
+			const thoughtBody = formatPendingWorkThought(pendingWork);
+			if (thoughtBody) {
+				await this.createThoughtActivity(sessionId, thoughtBody);
+				log.info(
+					`Posted pending-work thought (${pendingWork.sessionCrons.length} crons, ${pendingWork.backgroundTasks.length} background tasks)`,
+				);
 			}
+		}
+
+		// A turn cut off at the per-turn output-token cap arrives as a
+		// subtype:"success", is_error:false result — indistinguishable from a
+		// clean turn at the envelope level — so the status decision above
+		// intentionally leaves it Complete. Reclassifying to Error would fire
+		// reconcileAndReap against a runner that warm/held-open mode keeps
+		// alive. Surface the truncation instead via a visible error-type note,
+		// posted as the LAST activity (tracker-agnostic path, gated to Linear
+		// since only Linear infers session state from the last activity's
+		// content type). Skipped when pending work exists — the pending-work
+		// thought above must remain the last activity.
+		const assistantError = this.lastAssistantErrorBySession.get(sessionId);
+		const truncated = isTruncatedTurn({ resultMessage, assistantError });
+		if (
+			truncated &&
+			!pendingWork &&
+			session.issueContext?.trackerId === "linear"
+		) {
+			await this.syncEntryToActivitySink(
+				{
+					claudeSessionId: resultMessage.session_id,
+					type: "result",
+					content:
+						'⚠️ The agent hit its output-token limit for this turn and stopped early. Re-prompt (for example "continue") to resume.',
+					metadata: { timestamp: Date.now(), isError: true },
+				},
+				sessionId,
+			);
+			log.info(`Posted max_output_tokens truncation note`);
 		}
 
 		// Handle child session completion
@@ -533,6 +582,10 @@ export class AgentSessionManager extends EventEmitter {
 		} else {
 			log.info(`Session completed (subtype: ${resultMessage.subtype})`);
 		}
+
+		// Clear the per-turn assistant-error capture so a stale
+		// max_output_tokens can't fire a spurious note on a later clean turn.
+		this.lastAssistantErrorBySession.delete(sessionId);
 	}
 
 	/**
@@ -621,6 +674,10 @@ export class AgentSessionManager extends EventEmitter {
 	async markSessionStopped(sessionId: string): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
+		// A crash/stop before a result message arrives would otherwise leave a
+		// captured max_output_tokens error stranded, firing a spurious
+		// truncation note on a later, unrelated clean turn.
+		this.lastAssistantErrorBySession.delete(sessionId);
 		await this.updateSessionStatus(sessionId, AgentSessionStatus.Error);
 	}
 
@@ -930,6 +987,11 @@ export class AgentSessionManager extends EventEmitter {
 	markSessionResuming(sessionId: string): void {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
+		// A crash-before-result on the prior turn (or a stop) can leave a
+		// captured max_output_tokens error stranded; clear it before the
+		// resumed turn's messages start streaming in so completeSession can't
+		// mistake it for this turn's outcome.
+		this.lastAssistantErrorBySession.delete(sessionId);
 		if (session.status === AgentSessionStatus.Active) {
 			session.updatedAt = Date.now();
 			return;
