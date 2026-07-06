@@ -31,6 +31,7 @@ import {
 	formatScheduleWakeupResponse,
 	tryParseScheduleWakeupInput,
 } from "./PendingWorkFormatter.js";
+import { isTerminalSessionStatus } from "./sessionStatus.js";
 import type {
 	ActivityPostOptions,
 	ActivitySignal,
@@ -799,11 +800,7 @@ export class AgentSessionManager extends EventEmitter {
 
 		this.sessions.set(sessionId, session);
 
-		if (
-			status === AgentSessionStatus.Complete ||
-			status === AgentSessionStatus.Error ||
-			status === AgentSessionStatus.Stale
-		) {
+		if (isTerminalSessionStatus(status)) {
 			this.emit("session_terminal", { sessionId });
 		}
 	}
