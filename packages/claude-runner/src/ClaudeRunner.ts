@@ -1022,7 +1022,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 
 			const termination = classifyRunnerTermination(
 				error instanceof Error ? error : new Error(String(error)),
-				this.stopRequested,
+				{ stopRequested: this.stopRequested, stalled: false },
 			);
 			if (termination.kind === "requested") {
 				// Cyrus-initiated stop — log only; EdgeWorker reconciled via handleStopSignal.

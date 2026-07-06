@@ -9,31 +9,106 @@ const boom = new Error("upstream 500");
 
 describe("classifyRunnerTermination", () => {
 	it("classifies a requested abort as requested", () => {
-		expect(classifyRunnerTermination(abort, true)).toEqual({
+		expect(
+			classifyRunnerTermination(abort, {
+				stopRequested: true,
+				stalled: false,
+			}),
+		).toEqual({
 			kind: "requested",
 			reason: "user_abort",
 		});
 	});
-	it("classifies an UNrequested abort as crashed", () => {
-		expect(classifyRunnerTermination(abort, false)).toEqual({
-			kind: "crashed",
-			reason: "abort",
-		});
-	});
 	it("classifies a requested SIGTERM (code 143) as requested", () => {
-		expect(classifyRunnerTermination(sigterm, true)).toEqual({
+		expect(
+			classifyRunnerTermination(sigterm, {
+				stopRequested: true,
+				stalled: false,
+			}),
+		).toEqual({
 			kind: "requested",
 			reason: "sigterm",
 		});
 	});
-	it("classifies an UNrequested SIGTERM (code 143) as crashed", () => {
-		expect(classifyRunnerTermination(sigterm, false)).toEqual({
+	it("classifies an UNrequested, unstalled abort as crashed/abort", () => {
+		expect(
+			classifyRunnerTermination(abort, {
+				stopRequested: false,
+				stalled: false,
+			}),
+		).toEqual({
+			kind: "crashed",
+			reason: "abort",
+		});
+	});
+	it("classifies an UNrequested, unstalled SIGTERM (code 143) as crashed/sigterm", () => {
+		expect(
+			classifyRunnerTermination(sigterm, {
+				stopRequested: false,
+				stalled: false,
+			}),
+		).toEqual({
 			kind: "crashed",
 			reason: "sigterm",
 		});
 	});
-	it("classifies a genuine error as error regardless of stopRequested", () => {
-		expect(classifyRunnerTermination(boom, false)).toEqual({ kind: "error" });
-		expect(classifyRunnerTermination(boom, true)).toEqual({ kind: "error" });
+	it("classifies an UNrequested, stalled abort as crashed/stall", () => {
+		expect(
+			classifyRunnerTermination(abort, {
+				stopRequested: false,
+				stalled: true,
+			}),
+		).toEqual({
+			kind: "crashed",
+			reason: "stall",
+		});
+	});
+	it("classifies an UNrequested, stalled SIGTERM (code 143) as crashed/stall", () => {
+		expect(
+			classifyRunnerTermination(sigterm, {
+				stopRequested: false,
+				stalled: true,
+			}),
+		).toEqual({
+			kind: "crashed",
+			reason: "stall",
+		});
+	});
+	it("prefers a requested stop over a stale stalled flag (precedence)", () => {
+		expect(
+			classifyRunnerTermination(abort, {
+				stopRequested: true,
+				stalled: true,
+			}),
+		).toEqual({
+			kind: "requested",
+			reason: "user_abort",
+		});
+	});
+	it("classifies a genuine error as error regardless of flags", () => {
+		expect(
+			classifyRunnerTermination(boom, {
+				stopRequested: false,
+				stalled: false,
+			}),
+		).toEqual({ kind: "error" });
+		expect(
+			classifyRunnerTermination(boom, {
+				stopRequested: true,
+				stalled: false,
+			}),
+		).toEqual({ kind: "error" });
+		expect(
+			classifyRunnerTermination(boom, {
+				stopRequested: false,
+				stalled: true,
+			}),
+		).toEqual({ kind: "error" });
+		expect(
+			classifyRunnerTermination(boom, {
+				stopRequested: true,
+				stalled: true,
+			}),
+		).toEqual({ kind: "error" });
 	});
 });
