@@ -49,6 +49,7 @@ import type {
 	ClaudeRunnerEvents,
 	ClaudeSessionInfo,
 } from "./types.js";
+import { validateAskUserQuestionInput } from "./validateAskUserQuestionInput.js";
 
 // AbortError is no longer exported in v1.0.95, so we define it locally
 export class AbortError extends Error {
@@ -411,25 +412,21 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				`Intercepted AskUserQuestion tool call (toolUseID: ${options.toolUseID})`,
 			);
 
-			// Validate the input structure
+			// Validate the input structure (questions must be an array of
+			// exactly one question) — see validateAskUserQuestionInput.ts.
 			const askInput = input as unknown as AskUserQuestionInput;
-			if (!askInput.questions || !Array.isArray(askInput.questions)) {
+			const validation = validateAskUserQuestionInput(input);
+			if (!validation.ok) {
+				if (Array.isArray(askInput.questions)) {
+					// A valid array, just not length 1 — preserve the existing
+					// operational-visibility warn log for this case.
+					this.logger.warn(
+						`Rejecting AskUserQuestion with ${askInput.questions.length} questions (only 1 allowed)`,
+					);
+				}
 				return {
 					behavior: "deny",
-					message:
-						"Invalid AskUserQuestion input: 'questions' array is required",
-				};
-			}
-
-			// IMPORTANT: Only allow one question at a time
-			if (askInput.questions.length !== 1) {
-				this.logger.warn(
-					`Rejecting AskUserQuestion with ${askInput.questions.length} questions (only 1 allowed)`,
-				);
-				return {
-					behavior: "deny",
-					message:
-						"Only one question at a time is supported. Please ask each question separately.",
+					message: validation.message,
 				};
 			}
 
