@@ -36,6 +36,10 @@ describe("StallWatchdog", () => {
 		vi.advanceTimersByTime(cfg.idleMs);
 
 		expect(onStall).toHaveBeenCalledTimes(1);
+		expect(onStall).toHaveBeenCalledWith({
+			budgetMs: cfg.idleMs,
+			pendingToolCount: 0,
+		});
 	});
 
 	it("does not fire before idleMs elapses", () => {
@@ -92,6 +96,10 @@ describe("StallWatchdog", () => {
 		// Past toolMs: fires.
 		vi.advanceTimersByTime(cfg.toolMs - cfg.idleMs);
 		expect(onStall).toHaveBeenCalledTimes(1);
+		expect(onStall).toHaveBeenCalledWith({
+			budgetMs: cfg.toolMs,
+			pendingToolCount: 1,
+		});
 	});
 
 	it("a following tool_result drops the count back to the idle budget", () => {
@@ -182,5 +190,64 @@ describe("StallWatchdog", () => {
 		vi.advanceTimersByTime(cfg.idleMs);
 
 		expect(onStall).toHaveBeenCalledTimes(1);
+		// Between-turns: beginTurn DOES reset the tool count to 0, so turn 2
+		// is armed on the idle budget (not a leftover tool budget from turn 1).
+		expect(onStall).toHaveBeenCalledWith({
+			budgetMs: cfg.idleMs,
+			pendingToolCount: 0,
+		});
+	});
+
+	describe("mid-turn beginTurn() (FIX 1 regression)", () => {
+		// Cyrus mid-implementation prompting streams a user comment into a
+		// LIVE turn via addStreamMessage -> stallWatchdog.beginTurn(). If a
+		// long silent tool is in flight when that happens, beginTurn() must
+		// NOT downgrade the turn from the tool budget to the shorter idle
+		// budget — that would let the watchdog abort a perfectly healthy
+		// tool call just because a comment streamed in.
+		it("preserves the in-flight tool budget when beginTurn() is called mid-turn", () => {
+			const onStall = vi.fn();
+			const watchdog = new StallWatchdog(cfg, onStall);
+
+			watchdog.beginTurn(); // turn starts
+			watchdog.onMessage(assistantToolUse); // tool in flight -> tool budget, pendingToolCount 1
+
+			// Mid-turn: a streamed user comment arrives while the tool is still
+			// running (turnActive is still true — no `result` has landed).
+			watchdog.beginTurn();
+
+			// Past the idle budget but still under the tool budget: must NOT
+			// fire — proves the tool budget (not the idle budget) is armed.
+			vi.advanceTimersByTime(cfg.idleMs + 1);
+			expect(onStall).not.toHaveBeenCalled();
+
+			// Past the tool budget: fires, still reporting the tool in flight.
+			vi.advanceTimersByTime(cfg.toolMs - cfg.idleMs);
+			expect(onStall).toHaveBeenCalledTimes(1);
+			expect(onStall).toHaveBeenCalledWith({
+				budgetMs: cfg.toolMs,
+				pendingToolCount: 1,
+			});
+		});
+
+		it("still resets the tool count to 0 for a genuinely new (between-turns) beginTurn()", () => {
+			const onStall = vi.fn();
+			const watchdog = new StallWatchdog(cfg, onStall);
+
+			watchdog.beginTurn();
+			watchdog.onMessage(assistantToolUse); // pendingToolCount -> 1 (tool budget)
+			watchdog.onMessage(resultMessage); // turn ends: turnActive false, count reset
+
+			watchdog.beginTurn(); // genuinely new turn (warm follow-up)
+
+			// Past idleMs: fires on the idle budget with a reset tool count —
+			// proves the new turn was NOT left on the stale tool budget.
+			vi.advanceTimersByTime(cfg.idleMs);
+			expect(onStall).toHaveBeenCalledTimes(1);
+			expect(onStall).toHaveBeenCalledWith({
+				budgetMs: cfg.idleMs,
+				pendingToolCount: 0,
+			});
+		});
 	});
 });

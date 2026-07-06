@@ -117,14 +117,25 @@ export class StallWatchdog {
 
 	constructor(
 		private readonly cfg: StallConfig, // { enabled, idleMs, toolMs }
-		private readonly onStall: () => void, // called when a turn goes silent past budget
+		private readonly onStall: (info: {
+			budgetMs: number;
+			pendingToolCount: number;
+		}) => void, // called when a turn goes silent past budget
 	) {}
 
 	/** Turn started (fresh turn or a warm follow-up prompt): mark active, reset tool count, arm. */
 	beginTurn(): void {
 		if (!this.cfg.enabled) return;
-		this.turnActive = true;
-		this.pendingToolCount = 0;
+		// A streamed follow-up can arrive MID-turn (Cyrus mid-implementation
+		// prompting streams a user comment into a live turn). Only zero the
+		// in-flight tool count for a genuinely new turn (prior turn ended →
+		// turnActive false); mid-turn, preserve pendingToolCount so a tool still
+		// in flight keeps the longer tool budget instead of being downgraded to
+		// the idle budget.
+		if (!this.turnActive) {
+			this.turnActive = true;
+			this.pendingToolCount = 0;
+		}
 		this.arm();
 	}
 
@@ -158,13 +169,12 @@ export class StallWatchdog {
 	private arm(): void {
 		this.disarm();
 		if (!this.cfg.enabled || !this.turnActive) return;
-		this.timer = setTimeout(
-			() => {
-				this.timer = null;
-				this.onStall();
-			},
-			selectStallBudget(this.pendingToolCount, this.cfg),
-		);
+		const budgetMs = selectStallBudget(this.pendingToolCount, this.cfg);
+		const pendingToolCount = this.pendingToolCount;
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			this.onStall({ budgetMs, pendingToolCount });
+		}, budgetMs);
 		this.timer.unref?.();
 	}
 
