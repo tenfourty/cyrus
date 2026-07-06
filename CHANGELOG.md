@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Stall watchdog for hung turns.** A turn that stops making any progress (a wedged model, a tool blocked forever, a gateway black-hole) is now detected and stopped automatically, instead of hanging indefinitely — and the stopped session is recoverable by simply re-prompting it. The watchdog is tool-aware: it allows a longer window while a tool is actually running (so a long build or test suite isn't killed) and a shorter one when the model itself has gone silent between steps. It watches only an active turn (never a session sitting idle between turns), so healthy work is never interrupted. Tunable via `CYRUS_STALL_IDLE_TIMEOUT_MS` (model-idle, default 10 min) and `CYRUS_STALL_TOOL_TIMEOUT_MS` (tool-running, default 30 min); set `CYRUS_STALL_WATCHDOG=0` to turn it off. When it fires, the timeline shows "⚠️ This session stalled (no activity) and was stopped. Re-prompt to retry."
+
 ### Fixed
 - A session that ends on a hard failure disguised as a normal result (for example, a "prompt too long" resume failure) is now correctly marked as errored instead of complete, so its status and logs reflect what actually happened.
 - A turn that stops early because it hit its output-token limit is no longer shown as a normal, finished response. Cyrus now adds a clear note to the timeline ("hit its output-token limit … re-prompt to continue") so you can tell the answer was cut off and simply re-prompt (e.g. "continue") to resume — instead of the truncated reply silently looking complete.
