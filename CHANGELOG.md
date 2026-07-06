@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- A turn that stops early because it hit its output-token limit is no longer shown as a normal, finished response. Cyrus now adds a clear note to the timeline ("hit its output-token limit … re-prompt to continue") so you can tell the answer was cut off and simply re-prompt (e.g. "continue") to resume — instead of the truncated reply silently looking complete.
+- When a session's runner dies unexpectedly (a crash) or ends on an error, the timeline no longer goes silent. Cyrus now posts a visible "this session stopped unexpectedly … re-prompt to retry" note, so you know it stopped and that re-prompting recovers it.
 - A stuck, crashed, or errored agent session can now be recovered by re-prompting it in Linear — no full restart required. Sessions whose runner died out of band (crash/OOM) or ended on an error (e.g. a gateway 429) are reconciled so a new prompt cleanly starts a fresh runner instead of silently folding into a dead session. Orphaned runner processes from errored sessions are now cleaned up. (To recover one stuck session: **stop it in Linear, then re-prompt** — with warm sessions enabled, send stop twice within 10s to force a full stop rather than an interrupt.)
 
 ## [0.2.67] - 2026-07-25
