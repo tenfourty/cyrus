@@ -28,9 +28,11 @@ import type { ILogger } from "./logging/ILogger.js";
 export type AskUserQuestionInput = SDKAskUserQuestionInput;
 
 /** Payload for AgentRunnerConfig.onTerminated. `requested` is always false —
- * a requested stop is not reported here. */
+ * a requested stop is not reported here. `"stall"` is emitted when a stall
+ * watchdog aborted a hung turn (see cyrus-claude-runner's
+ * `classifyRunnerTermination`). */
 export interface RunnerTerminationInfo {
-	reason: "abort" | "sigterm";
+	reason: "abort" | "sigterm" | "stall";
 	requested: false;
 }
 
