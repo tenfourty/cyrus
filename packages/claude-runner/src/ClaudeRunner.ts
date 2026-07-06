@@ -40,6 +40,7 @@ import {
 	buildBaseSessionEnv,
 	normalizeMcpHttpTransport,
 } from "./session-env.js";
+import { resolveStallConfig, StallWatchdog } from "./stallWatchdog.js";
 import { classifyRunnerTermination } from "./termination.js";
 import type {
 	ClaudeRunnerConfig,
@@ -281,6 +282,11 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	// catch tell a Cyrus-initiated stop from an out-of-band death (both can
 	// surface as an AbortError OR "exited with code 143").
 	private stopRequested = false;
+	// Set true by the stall watchdog's onStall callback; reset at the top of
+	// every startWithPrompt(). Lets the catch classify an abort caused by the
+	// watchdog as a "stall" rather than a generic crash.
+	private stalled = false;
+	private stallWatchdog: StallWatchdog;
 
 	constructor(config: ClaudeRunnerConfig, keepSessionWarm = false) {
 		super();
@@ -300,6 +306,31 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		if (config.onError) this.on("error", config.onError);
 		if (config.onComplete) this.on("complete", config.onComplete);
 		if (config.onTerminated) this.on("terminated", config.onTerminated);
+
+		// Only arm the stall watchdog for observable/recoverable (issue)
+		// sessions — chat sessions (no onTerminated) are unwatched, since
+		// there's no downstream listener to reconcile a stall termination.
+		const stallCfg = resolveStallConfig(process.env);
+		this.stallWatchdog = new StallWatchdog(
+			{ ...stallCfg, enabled: stallCfg.enabled && !!config.onTerminated },
+			() => this.onStallFired(),
+		);
+	}
+
+	/**
+	 * Called by the stall watchdog when a turn has gone silent past its
+	 * budget. Race-guarded: the timer can fire after the turn already ended
+	 * (e.g. `result` arrived and disarmed the watchdog in the same tick the
+	 * timer was about to fire) — bail out rather than aborting a session
+	 * that's no longer running.
+	 */
+	private onStallFired(): void {
+		if (!this.sessionInfo?.isRunning) return;
+		this.stalled = true;
+		this.logger.event("session_stalled", {
+			claudeSessionId: this.sessionInfo?.sessionId,
+		});
+		this.abortController?.abort();
 	}
 
 	/**
@@ -443,6 +474,10 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			throw new Error("Cannot add stream message when not in streaming mode");
 		}
 		this.streamingPrompt.addMessage(content);
+		// A follow-up prompt on a warm runner starts a NEW turn that must be
+		// watched — the query loop is still open, but the prior `result`
+		// already set turnActive false, so this re-arms the watchdog.
+		this.stallWatchdog.beginTurn();
 	}
 
 	/**
@@ -476,6 +511,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		this.pendingSessionCrons = [];
 		this.pendingBackgroundTasks = [];
 		this.stopRequested = false;
+		this.stalled = false;
 
 		const isResumed = !!this.config.resumeSessionId;
 		this.logger.event(isResumed ? "session_resumed" : "session_started", {
@@ -780,6 +816,11 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			} else {
 				this.activeQuery = query(queryOptions);
 			}
+			// Arm the watchdog for this turn (covers fresh turns and the
+			// first turn of a resumed/warm session). The outer
+			// resume-retry loop re-enters here and re-arms — fine, since
+			// a fresh-start restart is itself a new turn's worth of work.
+			this.stallWatchdog.beginTurn();
 			for await (const message of this.activeQuery) {
 				if (!this.sessionInfo?.isRunning) {
 					this.logger.info("Session was stopped, breaking from query loop");
@@ -830,6 +871,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				});
 				this.emit("message", message);
 				this.processMessage(message);
+				this.stallWatchdog.onMessage(message);
 				if (
 					message.type === "result" &&
 					!this.keepSessionWarm &&
@@ -882,7 +924,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 
 			const termination = classifyRunnerTermination(
 				error instanceof Error ? error : new Error(String(error)),
-				{ stopRequested: this.stopRequested, stalled: false },
+				{ stopRequested: this.stopRequested, stalled: this.stalled },
 			);
 			if (termination.kind === "requested") {
 				// Cyrus-initiated stop — log only; EdgeWorker reconciled via handleStopSignal.
@@ -912,6 +954,9 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			this.abortController = null;
 			this.activeQuery = null;
 			this.pendingResultMessage = null;
+			// Belt-and-suspenders: ensure no dangling timer survives this
+			// turn's exit, whichever path got us here.
+			this.stallWatchdog.dispose();
 
 			// Complete and clean up streaming prompt if it exists
 			if (this.streamingPrompt) {
@@ -998,6 +1043,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		if (this.activeQuery) {
 			this.logger.info("Interrupting current turn");
 			await this.activeQuery.interrupt();
+			this.stallWatchdog.endTurn();
 		} else {
 			this.logger.debug("interrupt() called but no active query");
 		}
@@ -1079,6 +1125,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 	 */
 	stop(): void {
 		this.stopRequested = true;
+		this.stallWatchdog.endTurn();
 		if (this.abortController) {
 			this.logger.event("session_stop_requested", {
 				claudeSessionId: this.sessionInfo?.sessionId,

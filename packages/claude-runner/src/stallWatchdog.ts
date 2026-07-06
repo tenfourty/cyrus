@@ -92,3 +92,86 @@ export function resolveStallConfig(env: NodeJS.ProcessEnv): StallConfig {
 
 	return { enabled, idleMs, toolMs };
 }
+
+/**
+ * Tool-aware inactivity watchdog for a single ClaudeRunner's ACTIVE TURN.
+ *
+ * This is a self-contained timer state machine — no ClaudeRunner import —
+ * built from the pure helpers above (`selectStallBudget`, `pendingToolDelta`).
+ * ClaudeRunner wires it at a handful of seams (turn start/end, message
+ * handling, teardown); all timer/budget logic lives here so it stays
+ * unit-testable in isolation with fake timers.
+ *
+ * Load-bearing invariant: the watchdog only ever ticks while `turnActive` is
+ * true. A warm runner sits silent between turns for an unbounded time (the
+ * `result` message is emitted but the SDK loop stays open for a possible
+ * follow-up prompt) — resetting/arming outside an active turn would
+ * false-positive on that healthy idle window. `onMessage` is a no-op unless
+ * a turn is active, and the `result` message ends the turn rather than
+ * re-arming it.
+ */
+export class StallWatchdog {
+	private turnActive = false;
+	private pendingToolCount = 0;
+	private timer: ReturnType<typeof setTimeout> | null = null;
+
+	constructor(
+		private readonly cfg: StallConfig, // { enabled, idleMs, toolMs }
+		private readonly onStall: () => void, // called when a turn goes silent past budget
+	) {}
+
+	/** Turn started (fresh turn or a warm follow-up prompt): mark active, reset tool count, arm. */
+	beginTurn(): void {
+		if (!this.cfg.enabled) return;
+		this.turnActive = true;
+		this.pendingToolCount = 0;
+		this.arm();
+	}
+
+	/** An SDK message arrived. While the turn is active: update tool-in-flight count; on `result`
+	 *  end the turn (disarm, no re-arm); otherwise re-arm with the current budget. */
+	onMessage(message: unknown): void {
+		if (!this.cfg.enabled || !this.turnActive) return;
+		this.pendingToolCount = Math.max(
+			0,
+			this.pendingToolCount + pendingToolDelta(message),
+		);
+		if ((message as { type?: unknown } | null | undefined)?.type === "result") {
+			this.endTurn();
+		} else {
+			this.arm();
+		}
+	}
+
+	/** Turn ended (result / stop / interrupt): disarm and go inactive. */
+	endTurn(): void {
+		this.turnActive = false;
+		this.pendingToolCount = 0;
+		this.disarm();
+	}
+
+	/** Runner teardown — ensure no dangling timer. */
+	dispose(): void {
+		this.disarm();
+	}
+
+	private arm(): void {
+		this.disarm();
+		if (!this.cfg.enabled || !this.turnActive) return;
+		this.timer = setTimeout(
+			() => {
+				this.timer = null;
+				this.onStall();
+			},
+			selectStallBudget(this.pendingToolCount, this.cfg),
+		);
+		this.timer.unref?.();
+	}
+
+	private disarm(): void {
+		if (this.timer) {
+			clearTimeout(this.timer);
+			this.timer = null;
+		}
+	}
+}
