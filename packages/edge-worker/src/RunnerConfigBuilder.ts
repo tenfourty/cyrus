@@ -183,7 +183,7 @@ export interface IssueRunnerConfigInput {
 	 * context window (1–99). When set, threaded into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
 	 * on the Claude session subprocess so the SDK's built-in auto-compaction
 	 * fires earlier than its ~93.5% default (which left too thin a margin for
-	 * tool-heavy turns — see CHANGELOG entry on ENG-555).
+	 * tool-heavy turns).
 	 *
 	 * Resolution is the caller's responsibility (typically `repo.autoCompactThresholdPercent
 	 * ?? edgeConfig.autoCompactThresholdPercent`). When undefined, no override

@@ -262,7 +262,7 @@ describe("AgentSessionManager stop-session behavior", () => {
 	});
 
 	it("marks session as Error when result is_error is true even if subtype is 'success'", async () => {
-		// Reproduces ENG-555: the SDK encodes some hard failures (notably
+		// Reproduces the case where the SDK encodes some hard failures (notably
 		// "Prompt is too long" on a too-large resume) as a result message
 		// with subtype: "success" AND is_error: true, with the error text
 		// in `result`. Cyrus used to gate the status flip on subtype only,

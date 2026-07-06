@@ -258,7 +258,7 @@ describe("with allowedDirectories (attachments dir, repo paths, etc.)", () => {
 	});
 
 	it("carves out the per-repo Claude auto-memory directory so MEMORY.md updates work", () => {
-		// Reproduces the ENG-357 scenario: cyrus session's cwd is the worktree,
+		// Reproduces the scenario where cyrus session's cwd is the worktree,
 		// repo lives at .cyrus/repos/repoA, and Claude Code's auto-memory dir
 		// for that repo lives at .claude/projects/-{HOME}--cyrus-repos-repoA/memory.
 		// Without the carve-out, every .claude/** path gets denied because the
