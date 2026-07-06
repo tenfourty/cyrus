@@ -605,6 +605,84 @@ describe("ClaudeRunner", () => {
 		});
 	});
 
+	describe("Stall watchdog wiring", () => {
+		// The watchdog's own arm/reset/tool-budget/turn-boundary logic is
+		// covered exhaustively (with fake timers) in StallWatchdog.test.ts.
+		// These tests are the thin ClaudeRunner-integration slice: do the
+		// wiring seams (constructor gating on config.onTerminated, arming
+		// before the query loop, aborting on fire, and classifying the
+		// resulting abort as a "stall") actually connect end-to-end. The
+		// full real-world arm→abort path is additionally covered by the F1
+		// stall-watchdog message-flow drive.
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("aborts a silent turn past the idle budget and classifies termination as a stall (onTerminated configured)", async () => {
+			const onTerminated = vi.fn();
+			const errorHandler = vi.fn();
+			const watchedRunner = new ClaudeRunner({
+				...defaultConfig,
+				onTerminated,
+			});
+			watchedRunner.on("error", errorHandler);
+
+			mockQuery.mockImplementation(async function* ({ options }) {
+				// Never emits another message — mirrors a wedged model/tool.
+				await new Promise((_resolve, reject) => {
+					options.abortController.signal.addEventListener("abort", () =>
+						reject(new Error("aborted by user")),
+					);
+				});
+			});
+
+			const startPromise = watchedRunner.start("test");
+			// Default idle budget is 10 minutes; advance past it with no
+			// intervening SDK message.
+			await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+			await startPromise;
+
+			expect(onTerminated).toHaveBeenCalledWith({
+				reason: "stall",
+				requested: false,
+			});
+			expect(errorHandler).not.toHaveBeenCalled();
+		});
+
+		it("never arms the watchdog when onTerminated is not configured (chat session)", async () => {
+			const errorHandler = vi.fn();
+			const unwatchedRunner = new ClaudeRunner({ ...defaultConfig });
+			unwatchedRunner.on("error", errorHandler);
+
+			let sawAbort = false;
+			mockQuery.mockImplementation(async function* ({ options }) {
+				await new Promise<void>((resolve) => {
+					options.abortController.signal.addEventListener("abort", () => {
+						sawAbort = true;
+						resolve();
+					});
+				});
+			});
+
+			const startPromise = unwatchedRunner.start("test");
+			// Advance well past both the idle AND tool budgets — an armed
+			// watchdog would have fired long before this.
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+			expect(sawAbort).toBe(false);
+			expect(unwatchedRunner.isRunning()).toBe(true);
+
+			// Clean up: stop explicitly so the started promise resolves.
+			unwatchedRunner.stop();
+			await startPromise;
+			expect(errorHandler).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("Session Info", () => {
 		it("should return null session info when not running", () => {
 			expect(runner.getSessionInfo()).toBeNull();
