@@ -5284,15 +5284,22 @@ ${taskSection}`;
 	}
 
 	/**
-	 * Reconcile a session whose runner died out of band (crash/OOM/SIGTERM) or
-	 * threw. Flips the session to Error via the public markSessionStopped, whose
-	 * session_terminal emit triggers the deferred reconcileAndReap (Task 2) to
-	 * stop+clear the runner. Idempotent — safe if the runner already exited.
+	 * Reconcile a session whose runner died out of band (crash/OOM/SIGTERM),
+	 * threw, or was killed by the stall watchdog (Task B3/B4). Flips the
+	 * session to a terminal status via the public markSessionStopped (Error)
+	 * or markSessionStale (stall), whose session_terminal emit triggers the
+	 * deferred reconcileAndReap (Task 2) to stop+clear the runner. Idempotent —
+	 * safe if the runner already exited.
 	 *
 	 * Takes a plain `{ reason: string }` (for logging only) — NOT the
 	 * RunnerTerminationInfo payload — so both onTerminated (reason
-	 * "abort"/"sigterm") and the genuine-error path (reason "error") call it
-	 * without a cast. RunnerTerminationInfo.reason is assignable to `string`.
+	 * "abort"/"sigterm"/"stall") and the genuine-error path (reason "error")
+	 * call it without a cast. RunnerTerminationInfo.reason is assignable to
+	 * `string`.
+	 *
+	 * `reason: "stall"` is the ONLY reason routed to markSessionStale — every
+	 * other reason keeps the existing markSessionStopped (Error) path and
+	 * generic "stopped unexpectedly" copy, byte-identical.
 	 */
 	private async reconcileTerminatedRunner(
 		sessionId: string,
@@ -5300,21 +5307,29 @@ ${taskSection}`;
 	): Promise<void> {
 		const session = this.agentSessionManager.getSession(sessionId);
 		if (!session) return;
+		const isStall = info.reason === "stall";
 		this.logger.warn(
-			`Runner for session ${sessionId} terminated out of band (${info.reason}); reconciling to Error`,
+			`Runner for session ${sessionId} terminated out of band (${info.reason}); reconciling to ${isStall ? "Stale" : "Error"}`,
 		);
-		// Sample BEFORE markSessionStopped, which flips status unconditionally.
-		// Self-resets across a re-ping: markSessionResuming sets status back to
-		// Active, so a later failure after re-prompting posts again.
+		// Sample BEFORE markSessionStopped/markSessionStale, which flip status
+		// unconditionally. Self-resets across a re-ping: markSessionResuming
+		// sets status back to Active, so a later failure after re-prompting
+		// posts again.
 		const preStatus = session.status;
 		const trackerId = session.issueContext?.trackerId;
 		if (shouldPostTerminalNotice(preStatus, trackerId)) {
 			await this.agentSessionManager.createErrorActivity(
 				sessionId,
-				`⚠️ This session stopped unexpectedly and was reset (reason: ${info.reason}). Re-prompt to retry.`,
+				isStall
+					? "⚠️ This session stalled (no activity) and was stopped. Re-prompt to retry."
+					: `⚠️ This session stopped unexpectedly and was reset (reason: ${info.reason}). Re-prompt to retry.`,
 			);
 		}
-		await this.agentSessionManager.markSessionStopped(sessionId);
+		if (isStall) {
+			await this.agentSessionManager.markSessionStale(sessionId);
+		} else {
+			await this.agentSessionManager.markSessionStopped(sessionId);
+		}
 	}
 
 	/**

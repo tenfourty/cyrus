@@ -542,6 +542,20 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Mark a session Stale — used when the stall watchdog aborts a hung turn.
+	 * Like markSessionStopped (Error) it flips to a terminal status whose
+	 * session_terminal emit drives reconcileAndReap; Stale distinguishes a
+	 * watchdog kill from a crash/error in logs and the timeline. Recoverable by
+	 * re-prompting (markSessionResuming → Active), same as Error.
+	 */
+	async markSessionStale(sessionId: string): Promise<void> {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		this.lastAssistantErrorBySession.delete(sessionId);
+		await this.updateSessionStatus(sessionId, AgentSessionStatus.Stale);
+	}
+
+	/**
 	 * Handle child session completion and resume parent
 	 */
 	private async handleChildSessionCompletion(
