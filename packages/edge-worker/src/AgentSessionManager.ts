@@ -316,7 +316,10 @@ export class AgentSessionManager extends EventEmitter {
 		// Durable per-session capture: the buffered assistant entry is discarded
 		// (not synced) when the matching "result" message arrives, so without
 		// this, completeSession has no way to see a max_output_tokens error by
-		// the time it runs. Last assistant message of the turn wins.
+		// the time it runs. Only errored assistant messages are captured (the
+		// guard below), so the last *errored* assistant of the turn wins; a
+		// clean message never overwrites it. The map is cleared at end-of-turn
+		// (and on resume/stop) so a stale value can't fire a spurious note.
 		if (sdkError) this.lastAssistantErrorBySession.set(sessionId, sdkError);
 
 		// Determine which runner is being used

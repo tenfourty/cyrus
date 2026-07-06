@@ -40,6 +40,21 @@ const ELICITATION_TIMEOUT_MS = (() => {
 })();
 
 /**
+ * Render a wait duration for the timeout notice. The default (15 min) reads as
+ * minutes, but a sub-minute custom `CYRUS_ELICITATION_TIMEOUT_MS` would round
+ * to a nonsensical "0 minutes" — so anything under a minute reports seconds.
+ * Exported for unit testing.
+ */
+export function describeElicitationWait(ms: number): string {
+	const totalSeconds = Math.round(ms / 1000);
+	if (totalSeconds < 60) {
+		return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+	}
+	const minutes = Math.round(totalSeconds / 60);
+	return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/**
  * Pending question data stored while awaiting user response
  */
 interface PendingQuestion {
@@ -239,13 +254,12 @@ export class AskUserQuestionHandler {
 			// intentionally NOT an abort of the session — the stall watchdog
 			// owns that and fires later (elicitation timeout < tool budget).
 			timer = setTimeout(() => {
-				const minutes = Math.round(ELICITATION_TIMEOUT_MS / 60000);
 				this.logger.info(
 					`No response to elicitation for session ${linearAgentSessionId} within ${ELICITATION_TIMEOUT_MS}ms; proceeding without an answer`,
 				);
 				finish({
 					answered: false,
-					message: `No response was received in ${minutes} minutes, so I'm proceeding without an answer. If you want to steer this, reply on the issue.`,
+					message: `No response was received in ${describeElicitationWait(ELICITATION_TIMEOUT_MS)}, so I'm proceeding without an answer. If you want to steer this, reply on the issue.`,
 				});
 			}, ELICITATION_TIMEOUT_MS);
 			timer.unref?.();
@@ -275,9 +289,6 @@ export class AskUserQuestionHandler {
 	): boolean {
 		const pendingQuestion = this.pendingQuestions.get(linearAgentSessionId);
 		if (!pendingQuestion) {
-			this.logger.debug(
-				`No pending question found for session ${linearAgentSessionId}`,
-			);
 			// This can legitimately happen when a user answers after the
 			// elicitation timeout has already resolved a graceful deny (the
 			// pending entry is deleted at that point) — log at info so an
