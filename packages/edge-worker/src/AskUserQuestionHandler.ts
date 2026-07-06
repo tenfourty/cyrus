@@ -25,6 +25,21 @@ import type {
 import { AgentActivitySignal, createLogger } from "cyrus-core";
 
 /**
+ * Bound on how long we wait for a human to answer an AskUserQuestion
+ * elicitation before resolving a graceful deny so a headless turn can't
+ * hang forever. Intentionally BELOW the stall watchdog's tool budget (30
+ * min) so a stalled question resolves gracefully before the watchdog would
+ * tear the whole turn down. Override with CYRUS_ELICITATION_TIMEOUT_MS.
+ */
+const ELICITATION_TIMEOUT_MS = (() => {
+	const parsed = Number.parseInt(
+		process.env.CYRUS_ELICITATION_TIMEOUT_MS ?? "",
+		10,
+	);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 15 * 60 * 1000; // 15 min default
+})();
+
+/**
  * Pending question data stored while awaiting user response
  */
 interface PendingQuestion {
@@ -188,31 +203,57 @@ export class AskUserQuestionHandler {
 			};
 		}
 
-		// Create promise to wait for user response
-		// Cleanup is handled via AbortSignal when the session ends
+		// Create promise to wait for user response, bounded by
+		// ELICITATION_TIMEOUT_MS so a headless turn whose human never answers
+		// can't hang forever. All three resolution paths (webhook answer,
+		// abort, timeout) funnel through `finish`, which clears the timer,
+		// removes the abort listener, deletes the pending entry, and resolves
+		// exactly once (guarded by `settled`).
 		return new Promise<AskUserQuestionResult>((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+
+			const finish = (result: AskUserQuestionResult) => {
+				if (settled) return;
+				settled = true;
+				if (timer !== undefined) clearTimeout(timer);
+				signal.removeEventListener("abort", abortHandler);
+				this.pendingQuestions.delete(linearAgentSessionId);
+				resolve(result);
+			};
+
 			// Setup abort handler for session cancellation
 			const abortHandler = () => {
 				this.logger.debug(
 					`Question cancelled for session ${linearAgentSessionId}`,
 				);
-				this.pendingQuestions.delete(linearAgentSessionId);
-				resolve({
+				finish({
 					answered: false,
 					message: "Operation was cancelled",
 				});
 			};
 			signal.addEventListener("abort", abortHandler, { once: true });
 
+			// Bound the wait: if nobody answers within the timeout, resolve a
+			// graceful deny so the agent proceeds rather than hanging. This is
+			// intentionally NOT an abort of the session — the stall watchdog
+			// owns that and fires later (elicitation timeout < tool budget).
+			timer = setTimeout(() => {
+				const minutes = Math.round(ELICITATION_TIMEOUT_MS / 60000);
+				this.logger.info(
+					`No response to elicitation for session ${linearAgentSessionId} within ${ELICITATION_TIMEOUT_MS}ms; proceeding without an answer`,
+				);
+				finish({
+					answered: false,
+					message: `No response was received in ${minutes} minutes, so I'm proceeding without an answer. If you want to steer this, reply on the issue.`,
+				});
+			}, ELICITATION_TIMEOUT_MS);
+			timer.unref?.();
+
 			// Store pending question
 			this.pendingQuestions.set(linearAgentSessionId, {
 				question,
-				resolve: (result: AskUserQuestionResult) => {
-					// Clean up abort handler before resolving
-					signal.removeEventListener("abort", abortHandler);
-					this.pendingQuestions.delete(linearAgentSessionId);
-					resolve(result);
-				},
+				resolve: (result: AskUserQuestionResult) => finish(result),
 				signal,
 			});
 		});
@@ -236,6 +277,13 @@ export class AskUserQuestionHandler {
 		if (!pendingQuestion) {
 			this.logger.debug(
 				`No pending question found for session ${linearAgentSessionId}`,
+			);
+			// This can legitimately happen when a user answers after the
+			// elicitation timeout has already resolved a graceful deny (the
+			// pending entry is deleted at that point) — log at info so an
+			// operator can see a late answer was received and dropped.
+			this.logger.info(
+				`Response received for session ${linearAgentSessionId} with no pending question (likely a late answer after the elicitation timeout); dropping it`,
 			);
 			return false;
 		}
