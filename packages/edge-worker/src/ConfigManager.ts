@@ -260,6 +260,10 @@ export class ConfigManager extends EventEmitter {
 					parsedConfig.prReviewTrigger ?? this.config.prReviewTrigger,
 				// Sandbox / egress proxy config
 				sandbox: parsedConfig.sandbox ?? this.config.sandbox,
+				// Auto-compact trigger threshold (percent of context window)
+				autoCompactThresholdPercent:
+					parsedConfig.autoCompactThresholdPercent ??
+					this.config.autoCompactThresholdPercent,
 			};
 
 			// Basic validation
@@ -360,6 +364,7 @@ export class ConfigManager extends EventEmitter {
 			"linearWorkspaces",
 			"userAccessControl",
 			"sandbox",
+			"autoCompactThresholdPercent",
 		];
 
 		for (const key of globalKeys) {

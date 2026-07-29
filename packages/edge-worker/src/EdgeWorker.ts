@@ -147,12 +147,17 @@ import { AttachmentService } from "./AttachmentService.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
+import { compactClaudeSession } from "./compact-claude-session.js";
 import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
 import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
 import { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";
 import { McpConfigService } from "./McpConfigService.js";
 import { PromptBuilder } from "./PromptBuilder.js";
+import {
+	resolveAutoCompactThresholdPercent,
+	shouldCompactBeforeTurn,
+} from "./pre-turn-compact.js";
 import type {
 	IssueContextResult,
 	PromptAssembly,
@@ -165,6 +170,7 @@ import {
 	type RepositoryRouterDeps,
 } from "./RepositoryRouter.js";
 import {
+	buildSessionSandboxSettings,
 	RunnerConfigBuilder,
 	resolveIssueMcpConfigPath,
 } from "./RunnerConfigBuilder.js";
@@ -6493,6 +6499,15 @@ ${input.userComment}
 			skills: allowedSkillNames,
 			sandboxSettings: this.sdkSandboxSettings ?? undefined,
 			egressCaCertPath: this.egressCaCertPath ?? undefined,
+			// Validated here rather than trusted: self-host installs never
+			// `safeParse` config.json against the Zod schema, so an out-of-range
+			// or non-numeric value would otherwise be stringified straight into
+			// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE for the child process.
+			autoCompactThresholdPercent: resolveAutoCompactThresholdPercent(
+				repository.autoCompactThresholdPercent ??
+					this.config.autoCompactThresholdPercent,
+				log,
+			),
 			onMessage: (message: SDKMessage) => {
 				this.handleClaudeMessage(sessionId, message, repository.id);
 			},
@@ -7258,6 +7273,83 @@ ${input.userComment}
 		console.log(
 			`[resumeAgentSession] needsNewSession=${needsNewSession}, resumeSessionId=${resumeSessionId ?? "none"}`,
 		);
+
+		// Pre-turn compact guard: when this is a Claude session resume and the
+		// session's recorded usage already crosses the configured threshold,
+		// run `/compact` against the existing claudeSessionId BEFORE forwarding
+		// the user's prompt to a fresh runner. The SDK's built-in
+		// auto-compaction only fires mid-stream during a turn, so a session
+		// that ended above the threshold (stopped, or grew past it on the
+		// final response) will otherwise rehydrate the over-budget transcript
+		// at the start of the next turn and fail with "Prompt is too long".
+		//
+		// Disabled when no Cyrus threshold is configured — operators who
+		// haven't opted in get the SDK's default behavior unchanged.
+		//
+		// The `/compact` executor spawns a REAL Claude Code session against
+		// this worktree, so the confinement of the upcoming turn is threaded
+		// through explicitly: the same derived sandbox settings
+		// (`buildSessionSandboxSettings`, shared with `RunnerConfigBuilder` so
+		// the two cannot drift), the same config-level `disallowedTools`, and
+		// the same `allowedDirectories` used to carve exceptions out of the
+		// home-directory deny set. See `compact-claude-session.ts`.
+		const resolvedAutoCompactThreshold = resolveAutoCompactThresholdPercent(
+			repository.autoCompactThresholdPercent ??
+				this.config.autoCompactThresholdPercent,
+			log,
+		);
+		if (resumeSessionId && session.claudeSessionId) {
+			const decision = shouldCompactBeforeTurn({
+				session,
+				thresholdPercent: resolvedAutoCompactThreshold,
+				logger: log,
+			});
+			if (decision.compact) {
+				log.info(
+					`Pre-turn compact: session at ${
+						decision.currentPercent?.toFixed(1) ?? "?"
+					}% of context window (threshold ${resolvedAutoCompactThreshold}%), running /compact before forwarding prompt`,
+				);
+				const compactResult = await compactClaudeSession({
+					claudeSessionId: session.claudeSessionId,
+					workingDirectory: session.workspace.path,
+					sandbox: this.sdkSandboxSettings
+						? buildSessionSandboxSettings(
+								this.sdkSandboxSettings,
+								allowedDirectories,
+								session.workspace.path,
+							)
+						: undefined,
+					disallowedTools,
+					allowedDirectories,
+					additionalEnv:
+						resolvedAutoCompactThreshold !== undefined
+							? {
+									CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
+										resolvedAutoCompactThreshold,
+									),
+								}
+							: undefined,
+					logger: log,
+				});
+				if (compactResult.ok) {
+					// The transcript just shrank, but `metadata.usage` still
+					// describes the pre-compact size and is only refreshed when
+					// the next turn produces a result message. Clearing it stops
+					// the next resume from re-compacting an already-compacted
+					// transcript — every `/compact` is a full summarization model
+					// call, so that repeat is a real cost.
+					agentSessionManager.clearRecordedUsage(sessionId);
+					if (session.metadata) {
+						session.metadata.usage = undefined;
+					}
+				} else {
+					log.warn(
+						`Pre-turn /compact failed (${compactResult.error}). Proceeding with resume — the user's prompt may also hit the same wall.`,
+					);
+				}
+			}
+		}
 
 		// Create runner configuration
 		// buildAgentRunnerConfig determines runner type from labels for new sessions

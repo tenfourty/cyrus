@@ -475,6 +475,11 @@
 							}
 						},
 						"additionalProperties": false
+					},
+					"autoCompactThresholdPercent": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 99
 					}
 				},
 				"required": [
@@ -963,6 +968,11 @@
 			},
 			"required": ["httpProxyPort", "socksProxyPort"],
 			"additionalProperties": false
+		},
+		"autoCompactThresholdPercent": {
+			"type": "integer",
+			"minimum": 1,
+			"maximum": 99
 		}
 	},
 	"required": ["repositories"],

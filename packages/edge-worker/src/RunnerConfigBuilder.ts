@@ -158,6 +158,58 @@ export interface IssueRunnerConfigInput {
 	sandboxSettings?: SandboxSettings;
 	/** CA cert path for MITM TLS termination — passed via child process env */
 	egressCaCertPath?: string;
+	/**
+	 * Resolved auto-compact trigger threshold as a percentage of the model
+	 * context window (1–99). When set, threaded into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+	 * on the Claude session subprocess so the SDK's built-in auto-compaction
+	 * fires earlier than the SDK's own default, which leaves too thin a margin
+	 * for tool-heavy turns.
+	 *
+	 * Resolution and validation are the caller's responsibility (typically
+	 * `resolveAutoCompactThresholdPercent(repo.autoCompactThresholdPercent ??
+	 * edgeConfig.autoCompactThresholdPercent, logger)`). There is no Cyrus
+	 * default: when this is undefined no override is injected at all and the
+	 * SDK's built-in default applies unchanged.
+	 */
+	autoCompactThresholdPercent?: number;
+}
+
+/**
+ * Derive the per-session Claude sandbox settings from the global sandbox
+ * config plus this session's worktree and readable directories.
+ *
+ * Exported (rather than left inline in `buildSandboxConfig`) because the
+ * pre-turn `/compact` executor spawns its own Claude Code session against the
+ * same worktree and must be confined identically. Two independent copies of
+ * this derivation would drift, and a drifted copy means an unsandboxed turn —
+ * so both callers go through this one function.
+ */
+export function buildSessionSandboxSettings(
+	sandboxSettings: SandboxSettings,
+	allowedDirectories: readonly string[],
+	workspacePath: string,
+): SandboxSettings {
+	return {
+		...sandboxSettings,
+		// When sandbox is enabled, do not allow commands to run unsandboxed
+		allowUnsandboxedCommands: false,
+		// Required for Go-based tools (gh, gcloud, terraform) to verify TLS certs
+		// when using httpProxyPort with a MITM proxy and custom CA. macOS only —
+		// opens access to com.apple.trustd.agent, which is a potential data
+		// exfiltration path. See: https://code.claude.com/docs/en/settings#sandbox-settings
+		enableWeakerNetworkIsolation: true,
+		filesystem: {
+			...sandboxSettings.filesystem,
+			// "." resolves to the cwd of the primary folder Claude is working in.
+			// See: https://code.claude.com/docs/en/settings#sandbox-path-prefixes
+			// allowedDirectories contains the attachments dir, repo paths, and git
+			// metadata dirs — all of which need OS-level read access alongside the worktree.
+			allowRead: [".", ...allowedDirectories],
+			denyRead: ["~/"],
+			// Restrict subprocess writes to the session worktree only
+			allowWrite: [workspacePath],
+		},
+	} as SandboxSettings;
 }
 
 export function resolveIssueMcpConfigPath(
@@ -479,6 +531,28 @@ export class RunnerConfigBuilder {
 			config.resumeSessionId = input.resumeSessionId;
 		}
 
+		// Cyrus auto-compact threshold → CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+		// for the Claude subprocess. Kept OUTSIDE `buildSandboxConfig`
+		// (which only runs when sandboxSettings is set) so the env-var
+		// reaches sandbox-disabled installs too — that was the original
+		// bug: the config field worked end-to-end on sandbox-enabled
+		// hosts and was silently inert on every other install. Merges
+		// with `additionalEnv` already produced by the sandbox path so
+		// the CA-cert vars (when present) are preserved.
+		if (
+			runnerType === "claude" &&
+			input.autoCompactThresholdPercent !== undefined
+		) {
+			const existing =
+				(config.additionalEnv as Record<string, string> | undefined) ?? {};
+			config.additionalEnv = {
+				...existing,
+				CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(
+					input.autoCompactThresholdPercent,
+				),
+			};
+		}
+
 		if (input.maxTurns !== undefined) {
 			config.maxTurns = input.maxTurns;
 		}
@@ -515,27 +589,11 @@ export class RunnerConfigBuilder {
 		const result: Record<string, unknown> = {};
 
 		if (input.sandboxSettings) {
-			result.sandbox = {
-				...input.sandboxSettings,
-				// When sandbox is enabled, do not allow commands to run unsandboxed
-				allowUnsandboxedCommands: false,
-				// Required for Go-based tools (gh, gcloud, terraform) to verify TLS certs
-				// when using httpProxyPort with a MITM proxy and custom CA. macOS only —
-				// opens access to com.apple.trustd.agent, which is a potential data
-				// exfiltration path. See: https://code.claude.com/docs/en/settings#sandbox-settings
-				enableWeakerNetworkIsolation: true,
-				filesystem: {
-					...input.sandboxSettings.filesystem,
-					// "." resolves to the cwd of the primary folder Claude is working in.
-					// See: https://code.claude.com/docs/en/settings#sandbox-path-prefixes
-					// allowedDirectories contains the attachments dir, repo paths, and git
-					// metadata dirs — all of which need OS-level read access alongside the worktree.
-					allowRead: [".", ...input.allowedDirectories],
-					denyRead: ["~/"],
-					// Restrict subprocess writes to the session worktree only
-					allowWrite: [input.session.workspace.path],
-				},
-			};
+			result.sandbox = buildSessionSandboxSettings(
+				input.sandboxSettings,
+				input.allowedDirectories,
+				input.session.workspace.path,
+			);
 		}
 
 		if (input.egressCaCertPath) {

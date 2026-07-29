@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- You can now set a percentage of the model's context window at which sessions compact their history, via `autoCompactThresholdPercent` in your Cyrus config (globally, or per repository). Long-running sessions on large-context models could otherwise grow until they hit "Prompt is too long" and stall, since the runner's built-in compaction leaves very little headroom. Leave it unset and nothing changes.
+- When a threshold is set, Cyrus also compacts a session's history before resuming it if the session was already over that threshold when it last stopped. Previously such a session would fail on its next prompt instead of compacting, because compaction only ran while a turn was in progress. Compaction happens before your prompt is sent, and if it fails the resume still goes ahead.
 
 ## [0.2.67] - 2026-07-25
 

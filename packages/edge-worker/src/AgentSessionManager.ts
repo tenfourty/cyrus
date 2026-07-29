@@ -372,6 +372,11 @@ export class AgentSessionManager extends EventEmitter {
 		await this.updateSessionStatus(sessionId, status, {
 			totalCostUsd: resultMessage.total_cost_usd,
 			usage: resultMessage.usage,
+			// Each ModelUsage entry carries the model's real `contextWindow`.
+			// Persisting it lets the pre-turn compact guard size the context
+			// window from what the SDK actually reported instead of a built-in
+			// model → window table that can only ever be a stale guess.
+			modelUsage: resultMessage.modelUsage,
 		});
 
 		if (wasStopRequested) {
@@ -649,6 +654,28 @@ export class AgentSessionManager extends EventEmitter {
 			);
 		}
 		// "allowed" status is a no-op — fires frequently and provides no actionable information
+	}
+
+	/**
+	 * Forget the session's last recorded `usage`.
+	 *
+	 * `metadata.usage` is only refreshed when a turn produces a result
+	 * message, so after a successful out-of-band `/compact` it still describes
+	 * the *pre-compact* transcript. Left alone, the next resume would read
+	 * that stale figure, conclude the session is still over threshold, and
+	 * compact an already-compacted transcript — a real, repeatable cost, since
+	 * every `/compact` is a full summarization model call. Clearing it makes
+	 * `shouldCompactBeforeTurn` return `no-usage-yet` until the next result
+	 * message reports the post-compact size.
+	 *
+	 * `modelUsage` is deliberately kept: it carries the model's context window,
+	 * which compaction does not change and which is expensive to re-guess.
+	 */
+	clearRecordedUsage(sessionId: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session?.metadata) return;
+		session.metadata.usage = undefined;
+		this.sessions.set(sessionId, session);
 	}
 
 	/**

@@ -102,6 +102,17 @@ export interface CyrusAgentSession {
 		apiKeySource?: string;
 		totalCostUsd?: number;
 		usage?: any;
+		/**
+		 * Per-model usage as reported on the SDK result message
+		 * (`modelUsage: Record<string, ModelUsage>`). Each entry carries the
+		 * model's real `contextWindow`, which is the authoritative source for
+		 * context-utilization math — preferred over any built-in model → window
+		 * table, which can only ever be a stale guess.
+		 */
+		modelUsage?: Record<
+			string,
+			{ contextWindow?: number } & Record<string, unknown>
+		>;
 		commentId?: string;
 	};
 }
