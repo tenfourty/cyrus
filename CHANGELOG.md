@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Top-level config settings (such as the auto-compact threshold, auto-resume, and Cursor model defaults) are now reliably passed through to the running agent instead of silently being ignored on self-hosted installs.
 
 ## [0.2.67] - 2026-07-25
 
