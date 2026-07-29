@@ -895,4 +895,85 @@ describe("ClaudeRunner", () => {
 			// (This tests the filtering logic in writeReadableLogEntry)
 		});
 	});
+
+	describe("fallbackModel chain", () => {
+		async function capturedFallbackModel(
+			config: ClaudeRunnerConfig,
+		): Promise<unknown> {
+			let captured: unknown;
+			mockQuery.mockImplementation(async function* ({ options }: any) {
+				captured = options.fallbackModel;
+				yield {
+					type: "assistant",
+					message: { content: [{ type: "text", text: "hi" }] },
+					parent_tool_use_id: null,
+					session_id: "s",
+				} as any;
+			});
+			await new ClaudeRunner(config).start("test");
+			return captured;
+		}
+
+		it("joins a configured chain into the comma-separated form the SDK expects", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					fallbackModel: ["minimax", "haiku"],
+				}),
+			).toBe("minimax,haiku");
+		});
+
+		it("passes a single fallback model string through unchanged (back-compat)", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					fallbackModel: "minimax",
+				}),
+			).toBe("minimax");
+		});
+
+		it("falls back to the sonnet default for an empty chain", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					fallbackModel: [],
+				}),
+			).toBe("sonnet");
+		});
+
+		// The SDK throws unconditionally at construction when fallbackModel ===
+		// model (bundled sdk.mjs: `if (m && g === m) throw Error("Fallback
+		// model cannot be the same as the main model...")`). A perfectly
+		// reasonable operator config — "don't switch models" — must not crash
+		// every session.
+		it("omits fallbackModel entirely when it equals the primary model (no throw)", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					model: "sonnet",
+					fallbackModel: "sonnet",
+				}),
+			).toBeUndefined();
+		});
+
+		it("drops a wasted first hop equal to the primary from a chain", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					model: "opus",
+					fallbackModel: ["opus", "sonnet"],
+				}),
+			).toBe("sonnet");
+		});
+
+		it("omits fallbackModel when every chain entry equals the primary model", async () => {
+			expect(
+				await capturedFallbackModel({
+					...defaultConfig,
+					model: "opus",
+					fallbackModel: ["opus"],
+				}),
+			).toBeUndefined();
+		});
+	});
 });

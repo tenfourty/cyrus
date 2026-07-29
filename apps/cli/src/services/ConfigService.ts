@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { migrateEdgeConfig } from "cyrus-core";
+import { migrateEdgeConfig, normalizeFallbackModel } from "cyrus-core";
 import type { EdgeConfig } from "../config/types.js";
 import type { Logger } from "./Logger.js";
 
@@ -86,7 +86,13 @@ export class ConfigService {
 		}
 
 		if (config.defaultFallbackModel !== undefined) {
-			if (!config.claudeDefaultFallbackModel) {
+			// `[]` is truthy in JS, so a naive `!config.claudeDefaultFallbackModel`
+			// check treats an empty array as "already set" and skips moving the
+			// legacy value in — then the unconditional delete below destroys the
+			// operator's real (legacy) config with nothing to replace it.
+			// normalizeFallbackModel treats undefined/blank/[] as unset so the
+			// legacy value is correctly migrated in that case.
+			if (!normalizeFallbackModel(config.claudeDefaultFallbackModel)) {
 				config.claudeDefaultFallbackModel = config.defaultFallbackModel;
 				this.logger.info(
 					`[Migration] Moved "defaultFallbackModel" to "claudeDefaultFallbackModel"`,

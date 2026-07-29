@@ -13,11 +13,13 @@ import type {
 import type {
 	AgentRunnerConfig,
 	CyrusAgentSession,
+	FallbackModelConfig,
 	ILogger,
 	OnAskUserQuestion,
 	RepositoryConfig,
 	RunnerType,
 } from "cyrus-core";
+import { normalizeFallbackModel } from "cyrus-core";
 import { buildIntentToAddHook } from "./hooks/IntentToAddHook.js";
 import { buildPrMarkerHook } from "./hooks/PrMarkerHook.js";
 import { appendBrowserUseAddendum } from "./prompts/browserUsePromptAddendum.js";
@@ -62,6 +64,19 @@ export interface IRunnerSelector {
 	};
 	getDefaultModelForRunner(runnerType: RunnerType): string;
 	getDefaultFallbackModelForRunner(runnerType: RunnerType): string;
+	/**
+	 * The fallback the user *explicitly configured* for this runner (global
+	 * scope), or undefined when unset. Distinct from
+	 * getDefaultFallbackModelForRunner, which also bakes in the hardcoded
+	 * per-runner default — this returns only what the operator set, so the
+	 * builder can rank explicit config above the model-inferred fallback.
+	 *
+	 * Required (not optional) so an alternate IRunnerSelector implementation
+	 * can't silently lose the precedence fix by omitting it.
+	 */
+	getConfiguredFallbackModelForRunner(
+		runnerType: RunnerType,
+	): FallbackModelConfig | undefined;
 }
 
 /**
@@ -413,11 +428,31 @@ export class RunnerConfigBuilder {
 			appendSystemPrompt: appendCloudRuntimeAddendum(
 				appendBrowserUseAddendum(appendFailureModeAddendum(input.systemPrompt)),
 			),
-			// Priority order: label override > repository config > global default
+			// Priority: explicit per-repo config > explicit global config >
+			// model-inferred fallback (fallbackModelOverride, which the selector
+			// always derives from the model) > hardcoded per-runner default.
+			// Explicit config must outrank inference — otherwise a configured
+			// chain (the whole point of list-valued fallback) never reaches the
+			// SDK, since the inferred override is always set for Claude.
+			// normalizeFallbackModel collapses chains to the comma form and maps
+			// empty/blank/[] to undefined so `??` falls through correctly (an
+			// empty array is otherwise truthy and would mask lower-priority config).
+			// `repository.fallbackModel` has no runner scoping of its own (unlike
+			// getConfiguredFallbackModelForRunner, which is keyed per runner) — it
+			// must only be consulted for Claude sessions. Otherwise a repo-level
+			// Claude fallback chain (e.g. "sonnet,haiku") leaks into a Codex/Gemini/
+			// Cursor session as a single literal model id, and it would also defeat
+			// the resumed-session runner pinning above (which forces runnerType back
+			// to the resumed runner specifically so that runner's own config wins).
 			model: finalModel,
 			fallbackModel:
-				fallbackModelOverride ||
-				input.repository.fallbackModel ||
+				(runnerType === "claude"
+					? normalizeFallbackModel(input.repository.fallbackModel)
+					: undefined) ??
+				normalizeFallbackModel(
+					this.runnerSelector.getConfiguredFallbackModelForRunner(runnerType),
+				) ??
+				normalizeFallbackModel(fallbackModelOverride) ??
 				this.runnerSelector.getDefaultFallbackModelForRunner(runnerType),
 			logger: log,
 			hooks,

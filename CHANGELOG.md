@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- The fallback model setting now accepts an ordered list, so a session can fall through more than one alternate model when the primary is overloaded or unavailable. Set `fallbackModel` (per repository) or `claudeDefaultFallbackModel` (global default, also settable via the deprecated `defaultFallbackModel`) to an array such as `["model-b", "model-c"]`, and each is tried in turn until one responds. A single string still works exactly as before.
+
+### Fixed
+- A configured fallback model (single or list) now reliably takes precedence over the model-derived default, so what you set is what the session uses.
 
 ## [0.2.67] - 2026-07-25
 

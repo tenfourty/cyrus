@@ -1,7 +1,29 @@
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { watch as chokidarWatch, type FSWatcher } from "chokidar";
-import type { EdgeWorkerConfig, ILogger, RepositoryConfig } from "cyrus-core";
+import type {
+	EdgeWorkerConfig,
+	FallbackModelConfig,
+	ILogger,
+	RepositoryConfig,
+} from "cyrus-core";
+import { normalizeFallbackModel } from "cyrus-core";
+
+/**
+ * Pick the first candidate whose fallback-model value is actually
+ * configured, treating `undefined` / blank / `[]` as "unset" (an empty
+ * array is truthy in JS, so a plain `||` chain would stop at it and mask a
+ * later, real fallback — e.g. a legacy `defaultFallbackModel` sitting behind
+ * a `claudeDefaultFallbackModel: []` left over from a prior reload).
+ */
+function firstConfiguredFallbackModel(
+	...candidates: Array<FallbackModelConfig | undefined>
+): FallbackModelConfig | undefined {
+	for (const candidate of candidates) {
+		if (normalizeFallbackModel(candidate) !== undefined) return candidate;
+	}
+	return undefined;
+}
 
 /**
  * Describes the set of repository-level changes detected after a config
@@ -210,11 +232,12 @@ export class ConfigManager extends EventEmitter {
 					parsedConfig.defaultModel ||
 					this.config.claudeDefaultModel ||
 					this.config.defaultModel,
-				claudeDefaultFallbackModel:
-					parsedConfig.claudeDefaultFallbackModel ||
-					parsedConfig.defaultFallbackModel ||
-					this.config.claudeDefaultFallbackModel ||
+				claudeDefaultFallbackModel: firstConfiguredFallbackModel(
+					parsedConfig.claudeDefaultFallbackModel,
+					parsedConfig.defaultFallbackModel,
+					this.config.claudeDefaultFallbackModel,
 					this.config.defaultFallbackModel,
+				),
 				geminiDefaultModel:
 					parsedConfig.geminiDefaultModel || this.config.geminiDefaultModel,
 				codexDefaultModel:

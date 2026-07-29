@@ -116,6 +116,8 @@ export {
 	getDefaultReposDir,
 	getDefaultWorktreesDir,
 } from "./constants.js";
+export type { FallbackModelConfig } from "./fallback-model.js";
+export { normalizeFallbackModel } from "./fallback-model.js";
 // Issue Tracker Abstraction
 export type {
 	AgentActivity,

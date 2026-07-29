@@ -27,6 +27,7 @@ import {
 	type IAgentRunner,
 	type ILogger,
 	LogLevel,
+	normalizeFallbackModel,
 	StreamingPrompt,
 } from "cyrus-core";
 import dotenv from "dotenv";
@@ -475,7 +476,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			resumeSessionId: this.config.resumeSessionId,
 			workingDirectory: this.config.workingDirectory,
 			model: this.config.model,
-			fallbackModel: this.config.fallbackModel,
+			fallbackModel: normalizeFallbackModel(this.config.fallbackModel),
 		});
 		this.logger.debug("Working directory:", this.config.workingDirectory);
 
@@ -648,11 +649,45 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 
 			const isDebugLogging = this.logger.getLevel() === LogLevel.DEBUG;
 
+			// The SDK throws unconditionally at construction if fallbackModel
+			// equals model exactly (see the bundled sdk.mjs: `if (m && g === m)
+			// throw ...`). normalizeFallbackModel can't guard against this — it
+			// has no visibility into the primary model, it just collapses a
+			// chain into the comma form. Once both are known here, drop any
+			// chain entry that matches the primary (a wasted retry hop at best,
+			// a crash at worst if it's the *only* entry) and omit the
+			// `fallbackModel` option entirely if nothing survives, rather than
+			// forcing in a hardcoded default that could itself collide with the
+			// primary.
+			const effectiveModel = this.config.model || "opus";
+			const normalizedFallback = normalizeFallbackModel(
+				this.config.fallbackModel,
+			);
+			const fallbackChain = (
+				normalizedFallback ? normalizedFallback.split(",") : []
+			).filter((entry) => entry !== effectiveModel);
+			const hardcodedDefaultFallback = "sonnet";
+			if (
+				fallbackChain.length === 0 &&
+				normalizedFallback === undefined &&
+				hardcodedDefaultFallback !== effectiveModel
+			) {
+				// No fallback was configured at all (as opposed to one that was
+				// configured but fully filtered out above) — preserve the
+				// pre-existing last-resort default, unless it would itself
+				// collide with the primary model.
+				fallbackChain.push(hardcodedDefaultFallback);
+			}
+			const effectiveFallbackModel =
+				fallbackChain.length > 0 ? fallbackChain.join(",") : undefined;
+
 			const queryOptions: Parameters<typeof query>[0] = {
 				prompt: promptForQuery,
 				options: {
-					model: this.config.model || "opus",
-					fallbackModel: this.config.fallbackModel || "sonnet",
+					model: effectiveModel,
+					...(effectiveFallbackModel && {
+						fallbackModel: effectiveFallbackModel,
+					}),
 					abortController: this.abortController,
 					// Use Claude Code preset by default to maintain backward compatibility
 					// This can be overridden if systemPrompt is explicitly provided

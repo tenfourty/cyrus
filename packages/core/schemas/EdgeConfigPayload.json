@@ -97,7 +97,17 @@
 						"type": "string"
 					},
 					"fallbackModel": {
-						"type": "string"
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						]
 					},
 					"labelPrompts": {
 						"type": "object",
@@ -519,7 +529,17 @@
 			"type": "string"
 		},
 		"claudeDefaultFallbackModel": {
-			"type": "string"
+			"anyOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			]
 		},
 		"geminiDefaultModel": {
 			"type": "string"
@@ -541,7 +561,17 @@
 			"type": "string"
 		},
 		"defaultFallbackModel": {
-			"type": "string"
+			"anyOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			]
 		},
 		"global_setup_script": {
 			"type": "string"
