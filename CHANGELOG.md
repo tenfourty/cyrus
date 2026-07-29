@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- Restarting Cyrus no longer interrupts tool calls that are already running. On `SIGTERM`, Cyrus waits for each active Claude session to reach a tool-call boundary before shutting down, so a restart or deploy no longer kills an in-flight `git push`, a long build, a deploy script, or an MCP request partway through. Model responses may still be cut off, but they resume cleanly on the next start. The wait is bounded by a hard cap (default 30 minutes, `CYRUS_DRAIN_HARD_CAP_MS`; set `0` to restore the previous immediate shutdown) and a per-session cap (default 20 minutes, `CYRUS_DRAIN_PER_SESSION_CAP_MS`). While Cyrus is waiting, new webhooks are declined with `503 Retry-After: 30` so the issue tracker redelivers them after the restart, though stop requests are still accepted so you can cancel a stuck session. A second `SIGTERM` stops waiting and shuts down immediately; `SIGINT` shuts down immediately as before. Sessions on the Codex, Cursor, and Gemini runners are not yet tracked at tool-call granularity and fall back to the per-session cap. If you run Cyrus under systemd, raise `TimeoutStopSec` above the hard cap before relying on this.
+- New `POST /admin/drain` and `GET /admin/drain/status` endpoints start a graceful shutdown on demand and report what it is still waiting for. These endpoints are unauthenticated, so do not expose them to untrusted networks.
 
 ## [0.2.67] - 2026-07-25
 
