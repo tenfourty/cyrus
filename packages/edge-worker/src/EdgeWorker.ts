@@ -146,6 +146,10 @@ import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
+import {
+	decideSessionCreationAction,
+	KeyedMutex,
+} from "./ConcurrentSessionGuard.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
 import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
 import { EgressProxy } from "./EgressProxy.js";
@@ -209,6 +213,8 @@ export class EdgeWorker extends EventEmitter {
 	private activitySinks: Map<string, IActivitySink> = new Map(); // Maps Linear workspace ID to activity sink (one per workspace, mirrors issueTrackers)
 	private sessionRepositories: Map<string, string> = new Map(); // Maps session ID to repository ID
 	private lastStopTimeBySession: Map<string, number> = new Map(); // Maps session ID to timestamp of last stop signal (for double-stop detection)
+	private issueSessionMutex = new KeyedMutex(); // Serializes session-creation decisions per issue id
+	private issuesInitializing = new Set<string>(); // Issue ids whose first session is mid-initialization (worktree being created, not yet Active)
 	private warmInstances: Map<string, WarmQuery> = new Map(); // Pre-warmed Claude sessions keyed by agentSessionId
 	private issueTrackers: Map<string, IIssueTrackerService> = new Map(); // one issue tracker per Linear workspace (keyed by linearWorkspaceId)
 	private linearEventTransport: LinearEventTransport | null = null; // Single event transport for webhook delivery
@@ -4367,19 +4373,171 @@ ${taskSection}`;
 			return;
 		}
 
-		// Initialize agent runner using shared logic (pass full repositories array)
-		await this.initializeAgentRunner(
-			agentSession,
-			repositories,
-			linearWorkspaceId,
-			guidance,
-			commentBody,
-			baseBranchOverrides,
-			routingMethod,
+		// Guard against two runners working the same issue concurrently (see
+		// ConcurrentSessionGuard.ts for the full rationale and dependencies).
+		const dedupIssueId = agentSession.issue!.id;
+		const decision = await this.issueSessionMutex.runExclusive(
+			dedupIssueId,
+			async () => {
+				const action = decideSessionCreationAction(
+					dedupIssueId,
+					agentSession.id,
+					{
+						getActiveSessionsByIssueId: (id) =>
+							this.agentSessionManager.getActiveSessionsByIssueId(id),
+						isSessionLive: (id) =>
+							this.agentSessionManager
+								.getSession(id)
+								?.agentRunner?.isRunning() ?? false,
+						isIssueInitializing: (id) => this.issuesInitializing.has(id),
+					},
+				);
+				// Reserve INSIDE the lock so check-and-reserve is atomic by
+				// construction, and hold the reservation for the entire init
+				// window (removed only in the `finally` below) so a concurrent
+				// webhook arriving any time mid-init folds in via the
+				// isIssueInitializing check.
+				if (action.action === "create") {
+					this.issuesInitializing.add(dedupIssueId);
+				}
+				return action;
+			},
 		);
+
+		if (decision.action === "fold-in") {
+			await this.foldDuplicateSessionIntoActive(
+				agentSession,
+				decision.targetSessionId,
+				linearWorkspaceId,
+				commentBody,
+			);
+			return;
+		}
+
+		try {
+			// Initialize agent runner using shared logic (pass full repositories array)
+			await this.initializeAgentRunner(
+				agentSession,
+				repositories,
+				linearWorkspaceId,
+				guidance,
+				commentBody,
+				baseBranchOverrides,
+				routingMethod,
+			);
+		} finally {
+			this.issuesInitializing.delete(dedupIssueId);
+		}
 	}
 
 	/**
+	 * Handle a duplicate `created` webhook for an issue that already has a live
+	 * (or initializing) agent session: do NOT start a second runner/worktree.
+	 * Best-effort route the duplicate's comment into the live session's running
+	 * runner, then close the duplicate Linear session thread with a `response`
+	 * so it doesn't linger as "still working".
+	 */
+	private async foldDuplicateSessionIntoActive(
+		duplicateSession: AgentSessionCreatedWebhook["agentSession"],
+		targetSessionId: string | undefined,
+		linearWorkspaceId: string,
+		commentBody?: string | null,
+	): Promise<void> {
+		const issueIdentifier = duplicateSession.issue?.identifier ?? "unknown";
+		this.logger.info(
+			`Duplicate agent session ${duplicateSession.id} for issue ${issueIdentifier} — folding into active session ${targetSessionId ?? "(initializing)"} instead of starting a second runner`,
+		);
+
+		// Route the duplicate's comment into the live session, reusing the same
+		// stream-or-resume delivery path prompted webhooks use (see
+		// handlePromptWithStreamingCheck) so the comment actually reaches the
+		// runner — not just the timeline — even when streaming isn't available.
+		let delivered = false;
+		const trimmedComment = commentBody?.trim();
+		if (targetSessionId && trimmedComment) {
+			const targetSession =
+				this.agentSessionManager.getSession(targetSessionId);
+			const targetRepoId = this.sessionRepositories.get(targetSessionId);
+			const targetRepo = targetRepoId
+				? this.repositories.get(targetRepoId)
+				: undefined;
+
+			if (targetSession && targetRepo) {
+				try {
+					await this.handlePromptWithStreamingCheck(
+						targetSession,
+						targetRepo,
+						targetSessionId,
+						this.agentSessionManager,
+						trimmedComment,
+						"", // Attachment manifests for folded comments are out of scope for now
+						false, // Continuing the live session, not starting a new one
+						[],
+						"duplicate session fold-in",
+						linearWorkspaceId,
+					);
+					delivered = true;
+				} catch (error) {
+					this.logger.debug(
+						`Could not deliver duplicate comment into session ${targetSessionId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			} else {
+				this.logger.debug(
+					`Could not resolve session/repository for fold-in target ${targetSessionId}; falling back to a thought activity`,
+				);
+			}
+
+			// Last-resort fallback: surface the comment in the active session's
+			// thread so it is not lost when we couldn't stream or resume into it.
+			// This is timeline-visible only — it does not feed the runner, so the
+			// decline note below must not claim delivery in this case.
+			if (!delivered) {
+				await this.activityPoster.postThoughtActivity(
+					targetSessionId,
+					linearWorkspaceId,
+					`A near-simultaneous trigger for this issue arrived in a separate agent session. Its message:\n\n${trimmedComment}`,
+				);
+			}
+		}
+
+		// Close the duplicate session's thread so Linear doesn't show it working.
+		// When there's no live runner to route into yet (a sibling still
+		// initializing), echo the message back into this thread so it is never
+		// silently dropped — the initializing sibling also picks it up from the
+		// issue comments when it builds its prompt, but echoing guards the case
+		// where the trigger wasn't a top-level issue comment.
+		let note: string;
+		if (!targetSessionId) {
+			note =
+				"This issue is already being picked up by another agent session, so I won't start a second one here.";
+			if (trimmedComment) {
+				note += `\n\nYour message will be handled by that session:\n\n${trimmedComment}`;
+			}
+		} else if (!trimmedComment) {
+			note =
+				"This issue is already being worked by an active agent session, so I won't start a second one here.";
+		} else if (delivered) {
+			note =
+				"This issue is already being worked by an active agent session, so I won't start a second one here. Your message has been routed into that session.";
+		} else {
+			// We couldn't stream or resume into the target (fallback posted a
+			// thought instead) — don't claim delivery that didn't happen.
+			note =
+				"This issue is already being worked by an active agent session, so I won't start a second one here. Your message has been posted to that session's thread.";
+		}
+		const issueTracker = this.getIssueTrackerForWorkspace(linearWorkspaceId);
+		if (issueTracker) {
+			await this.activityPoster.postActivityDirect(
+				issueTracker,
+				{
+					agentSessionId: duplicateSession.id,
+					content: { type: "response", body: note },
+				},
+				"duplicate-session decline response",
+			);
+		}
+	}
 
 	/**
 	 * Initialize and start agent runner for an agent session

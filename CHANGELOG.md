@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Two agents no longer race on one issue's worktree. When a single Linear issue produced two agent sessions close together (e.g. a delegation plus a comment @mention), Cyrus started work twice and both edited the same worktree and branch at once — causing lost edits, interleaved commits, and one session seeing files the other created. Cyrus now detects that an issue already has a live session and, instead of starting a second one, routes the new message into the active session and closes the duplicate thread with a note.
 
 ## [0.2.67] - 2026-07-25
 

@@ -134,6 +134,7 @@ describe("EdgeWorker - Label-Based Prompt Command", () => {
 		// Mock AgentSessionManager
 		mockAgentSessionManager = {
 			createCyrusAgentSession: vi.fn(),
+			getActiveSessionsByIssueId: vi.fn(() => []),
 			getSession: vi.fn().mockReturnValue({
 				claudeSessionId: "claude-session-123",
 				workspace: { path: "/test/workspaces/TEST-123" },
