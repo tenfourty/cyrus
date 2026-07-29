@@ -67,6 +67,26 @@ export interface RepositoryRouterDeps {
  *
  * This class was extracted from EdgeWorker to improve modularity and testability.
  */
+
+/**
+ * Whether `ref` is a plausible git branch/ref name.
+ *
+ * Applied to the `#branch` part of a `[repo=name#branch]` description tag,
+ * which is untrusted text. Deliberately stricter than `git check-ref-format`:
+ * only letters, digits, `.`, `_`, `/` and `-` are allowed, so no shell
+ * metacharacter, whitespace or control character can reach a git invocation
+ * or a path. Also rejects the ref-format cases git itself forbids: leading or
+ * trailing `.`/`-`/`/`, `..`, and a `.lock` suffix.
+ */
+export function isPlausibleGitRef(ref: string): boolean {
+	if (!ref || ref.length > 255) return false;
+	if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return false;
+	if (ref.includes("..")) return false;
+	if (ref.endsWith(".lock")) return false;
+	if (/^[.\-/]/.test(ref) || /[.\-/]$/.test(ref)) return false;
+	return true;
+}
+
 export class RepositoryRouter {
 	/** Cache mapping issue IDs to selected repository IDs (array for multi-repo) */
 	private issueRepositoryCache = new Map<string, string[]>();
@@ -593,8 +613,23 @@ export class RepositoryRouter {
 
 		if (hashIndex !== -1) {
 			reposPart = value.slice(0, hashIndex);
-			branch = value.slice(hashIndex + 1);
-			if (!branch) branch = undefined;
+			const rawBranch = value.slice(hashIndex + 1).trim();
+			// The branch override comes from issue-description text, which is
+			// untrusted input. Reject anything that is not a plausible git ref
+			// rather than mangling it into one: a rejected override falls back
+			// to the repository's configured base branch, which is always safe.
+			if (rawBranch && isPlausibleGitRef(rawBranch)) {
+				branch = rawBranch;
+			} else {
+				if (rawBranch) {
+					this.logger.warn(
+						`Ignoring base-branch override in repo tag: ${JSON.stringify(
+							rawBranch,
+						)} is not a valid git ref name`,
+					);
+				}
+				branch = undefined;
+			}
 		} else {
 			reposPart = value;
 		}
@@ -641,7 +676,7 @@ export class RepositoryRouter {
 
 				const fullIssue = await issueTracker.fetchIssue(issueId);
 				const project = await fullIssue?.project;
-				if (!project || !project.name) {
+				if (!project?.name) {
 					this.logger.debug(
 						`No project name found for issue ${issueId} in repository ${repo.name}`,
 					);

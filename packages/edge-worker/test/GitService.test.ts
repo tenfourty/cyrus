@@ -11,10 +11,25 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitService } from "../src/GitService.js";
 
-vi.mock("node:child_process", () => ({
-	execSync: vi.fn(),
-	spawn: vi.fn(),
-}));
+// GitService invokes git via `execFileSync("git", [...argv])` so that no shell
+// is involved and untrusted values (branch names, refs, paths) can never be
+// interpreted as shell syntax. These tests drive git behaviour by matching on
+// the command, so the mock reconstructs an equivalent command string from the
+// argument vector and delegates to the `execSync` mock. That keeps every
+// existing expectation meaningful; the reconstruction exists only here, never
+// in production code.
+vi.mock("node:child_process", () => {
+	const execSync = vi.fn();
+	const execFileSync = vi.fn((file: unknown, args: unknown, opts: unknown) =>
+		execSync(
+			[String(file), ...(Array.isArray(args) ? args.map(String) : [])].join(
+				" ",
+			),
+			opts,
+		),
+	);
+	return { execSync, execFileSync, spawn: vi.fn() };
+});
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),
@@ -412,7 +427,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					// Branch exists
@@ -445,7 +460,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					// Branch exists
@@ -492,7 +507,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					return Buffer.from("abc123\n");
@@ -525,7 +540,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					throw new Error("branch not found");
@@ -824,7 +839,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					throw new Error("not found");
@@ -877,7 +892,7 @@ describe("GitService", () => {
 				}
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-97-fix-shader"',
+						"git rev-parse --verify cyrustester/eng-97-fix-shader",
 					)
 				) {
 					throw new Error("not found");
@@ -949,7 +964,7 @@ describe("GitService", () => {
 
 			// Should run git worktree remove with cwd set to the main repo
 			expect(mockExecSync).toHaveBeenCalledWith(
-				'git worktree remove --force "/home/user/.cyrus/worktrees/DEF-123"',
+				"git worktree remove --force /home/user/.cyrus/worktrees/DEF-123",
 				expect.objectContaining({
 					stdio: "pipe",
 					cwd: "/home/user/repos/my-repo",
@@ -1013,14 +1028,14 @@ describe("GitService", () => {
 
 			// Should run git worktree remove for both subdirectories with correct cwd
 			expect(mockExecSync).toHaveBeenCalledWith(
-				'git worktree remove --force "/home/user/.cyrus/worktrees/DEF-123/repo-a"',
+				"git worktree remove --force /home/user/.cyrus/worktrees/DEF-123/repo-a",
 				expect.objectContaining({
 					stdio: "pipe",
 					cwd: "/home/user/repos/repo-a",
 				}),
 			);
 			expect(mockExecSync).toHaveBeenCalledWith(
-				'git worktree remove --force "/home/user/.cyrus/worktrees/DEF-123/repo-b"',
+				"git worktree remove --force /home/user/.cyrus/worktrees/DEF-123/repo-b",
 				expect.objectContaining({
 					stdio: "pipe",
 					cwd: "/home/user/repos/repo-b",
@@ -1803,7 +1818,7 @@ describe("GitService", () => {
 				const cmdStr = String(cmd);
 				if (
 					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-96-parent-issue"',
+						"git rev-parse --verify cyrustester/eng-96-parent-issue",
 					)
 				) {
 					return Buffer.from("abc123\n");
@@ -1851,9 +1866,7 @@ describe("GitService", () => {
 			mockExecSync.mockImplementation((cmd: any) => {
 				const cmdStr = String(cmd);
 				if (
-					cmdStr.includes(
-						'git rev-parse --verify "cyrustester/eng-95-blocking"',
-					)
+					cmdStr.includes("git rev-parse --verify cyrustester/eng-95-blocking")
 				) {
 					return Buffer.from("abc123\n");
 				}
@@ -1903,7 +1916,7 @@ describe("GitService", () => {
 			mockExecSync.mockImplementation((cmd: any) => {
 				const cmdStr = String(cmd);
 				if (
-					cmdStr.includes('git rev-parse --verify "cyrustester/eng-96-parent"')
+					cmdStr.includes("git rev-parse --verify cyrustester/eng-96-parent")
 				) {
 					return Buffer.from("abc123\n");
 				}
@@ -1964,7 +1977,7 @@ describe("GitService", () => {
 
 			mockExecSync.mockImplementation((cmd: any) => {
 				const cmdStr = String(cmd);
-				if (cmdStr.includes('git rev-parse --verify "eng-95-branch"')) {
+				if (cmdStr.includes("git rev-parse --verify eng-95-branch")) {
 					return Buffer.from("abc123\n");
 				}
 				throw new Error("not found");

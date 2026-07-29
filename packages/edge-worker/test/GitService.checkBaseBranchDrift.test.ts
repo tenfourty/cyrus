@@ -10,9 +10,24 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GitService } from "../src/GitService.js";
 
-vi.mock("node:child_process", () => ({
-	execSync: vi.fn(),
-}));
+// GitService invokes git via `execFileSync("git", [...argv])` — no shell, so an
+// untrusted base-branch name can never be interpreted as shell syntax. These
+// tests drive git by matching on the command, so the mock reconstructs an
+// equivalent command string from the argument vector and delegates to the
+// `execSync` mock, keeping the existing expectations meaningful. The
+// reconstruction exists only in this test, never in production code.
+vi.mock("node:child_process", () => {
+	const execSync = vi.fn();
+	const execFileSync = vi.fn((file: unknown, args: unknown, opts: unknown) =>
+		execSync(
+			[String(file), ...(Array.isArray(args) ? args.map(String) : [])].join(
+				" ",
+			),
+			opts,
+		),
+	);
+	return { execSync, execFileSync };
+});
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),

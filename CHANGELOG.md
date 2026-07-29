@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- Cyrus now runs git without a shell. Branch names and refs are passed to git as literal arguments, so text taken from an issue description can never be interpreted as shell syntax. A base-branch override in a `[repo=name#branch]` tag is also checked against git's ref-name rules now, and ignored with a warning if it does not match, instead of being passed through.
+
 ### Removed
 - The HTTP endpoints for starting a drain have been removed. They accepted requests without any authentication, on the same port that receives issue-tracker webhooks, so anyone able to reach that port could stop Cyrus from taking new work. Sending SIGTERM still drains and shuts down cleanly, which is how the supervisor already stops Cyrus.
 

@@ -1,4 +1,4 @@
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -228,7 +228,7 @@ export class GitService {
 	async branchExists(branchName: string, repoPath: string): Promise<boolean> {
 		try {
 			// Check if branch exists locally
-			execSync(`git rev-parse --verify "${branchName}"`, {
+			execFileSync("git", ["rev-parse", "--verify", branchName], {
 				cwd: repoPath,
 				stdio: "pipe",
 			});
@@ -236,8 +236,9 @@ export class GitService {
 		} catch {
 			// Branch doesn't exist locally, check remote
 			try {
-				const remoteOutput = execSync(
-					`git ls-remote --heads origin "${branchName}"`,
+				const remoteOutput = execFileSync(
+					"git",
+					["ls-remote", "--heads", "origin", branchName],
 					{
 						cwd: repoPath,
 						stdio: "pipe",
@@ -280,7 +281,7 @@ export class GitService {
 			flag: "--git-dir" | "--git-common-dir",
 		): string | null => {
 			try {
-				const output = execSync(`git rev-parse ${flag}`, {
+				const output = execFileSync("git", ["rev-parse", flag], {
 					cwd: workingDirectory,
 					encoding: "utf8",
 					stdio: "pipe",
@@ -410,7 +411,7 @@ export class GitService {
 		baseBranch: string,
 	): Promise<{ commitCount: number; branchName: string } | null> {
 		try {
-			execSync(`git fetch origin "${baseBranch}"`, {
+			execFileSync("git", ["fetch", "origin", baseBranch], {
 				cwd: worktreePath,
 				stdio: "pipe",
 			});
@@ -441,7 +442,7 @@ export class GitService {
 		upstreamRef: string,
 	): string | null {
 		try {
-			const output = execSync(`git merge-base HEAD "${upstreamRef}"`, {
+			const output = execFileSync("git", ["merge-base", "HEAD", upstreamRef], {
 				cwd: worktreePath,
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "pipe"],
@@ -455,7 +456,7 @@ export class GitService {
 
 	private tryRevParse(worktreePath: string, ref: string): string | null {
 		try {
-			const output = execSync(`git rev-parse "${ref}"`, {
+			const output = execFileSync("git", ["rev-parse", ref], {
 				cwd: worktreePath,
 				encoding: "utf-8",
 				stdio: ["ignore", "pipe", "pipe"],
@@ -473,11 +474,15 @@ export class GitService {
 		toSha: string,
 	): number {
 		try {
-			const output = execSync(`git rev-list --count "${fromSha}".."${toSha}"`, {
-				cwd: worktreePath,
-				encoding: "utf-8",
-				stdio: ["ignore", "pipe", "pipe"],
-			});
+			const output = execFileSync(
+				"git",
+				["rev-list", "--count", `${fromSha}..${toSha}`],
+				{
+					cwd: worktreePath,
+					encoding: "utf-8",
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
 			const parsed = Number.parseInt(output.toString().trim(), 10);
 			return Number.isFinite(parsed) ? parsed : 0;
 		} catch {
@@ -903,7 +908,7 @@ export class GitService {
 			// Check if branch already exists
 			let createBranch = true;
 			try {
-				execSync(`git rev-parse --verify "${branchName}"`, {
+				execFileSync("git", ["rev-parse", "--verify", branchName], {
 					cwd: repository.repositoryPath,
 					stdio: "pipe",
 				});
@@ -947,7 +952,7 @@ export class GitService {
 			}
 
 			// Create the worktree - use determined base branch
-			let worktreeCmd: string;
+			let worktreeArgs: string[];
 			if (createBranch) {
 				if (hasRemote) {
 					// Check if the base branch exists remotely
@@ -981,11 +986,19 @@ export class GitService {
 						this.logger.info(
 							`Creating git worktree at ${workspacePath} from ${remoteBranch} (tracking ${baseBranch})`,
 						);
-						worktreeCmd = `git worktree add --track -b "${branchName}" "${workspacePath}" "${remoteBranch}"`;
+						worktreeArgs = [
+							"worktree",
+							"add",
+							"--track",
+							"-b",
+							branchName,
+							workspacePath,
+							remoteBranch,
+						];
 					} else {
 						// Check if base branch exists locally
 						try {
-							execSync(`git rev-parse --verify "${baseBranch}"`, {
+							execFileSync("git", ["rev-parse", "--verify", baseBranch], {
 								cwd: repository.repositoryPath,
 								stdio: "pipe",
 							});
@@ -993,14 +1006,29 @@ export class GitService {
 							this.logger.info(
 								`Creating git worktree at ${workspacePath} from local ${baseBranch}`,
 							);
-							worktreeCmd = `git worktree add -b "${branchName}" "${workspacePath}" "${baseBranch}"`;
+							worktreeArgs = [
+								"worktree",
+								"add",
+								"-b",
+								branchName,
+								workspacePath,
+								baseBranch,
+							];
 						} catch {
 							// Base branch doesn't exist locally either, fall back to remote default with --track
 							this.logger.info(
 								`Base branch '${baseBranch}' not found locally, falling back to remote ${repository.baseBranch} (tracking ${repository.baseBranch})`,
 							);
 							const defaultRemoteBranch = `origin/${repository.baseBranch}`;
-							worktreeCmd = `git worktree add --track -b "${branchName}" "${workspacePath}" "${defaultRemoteBranch}"`;
+							worktreeArgs = [
+								"worktree",
+								"add",
+								"--track",
+								"-b",
+								branchName,
+								workspacePath,
+								defaultRemoteBranch,
+							];
 						}
 					}
 				} else {
@@ -1008,17 +1036,24 @@ export class GitService {
 					this.logger.info(
 						`Creating git worktree at ${workspacePath} from local ${baseBranch}`,
 					);
-					worktreeCmd = `git worktree add -b "${branchName}" "${workspacePath}" "${baseBranch}"`;
+					worktreeArgs = [
+						"worktree",
+						"add",
+						"-b",
+						branchName,
+						workspacePath,
+						baseBranch,
+					];
 				}
 			} else {
 				// Branch already exists, just check it out
 				this.logger.info(
 					`Creating git worktree at ${workspacePath} with existing branch ${branchName}`,
 				);
-				worktreeCmd = `git worktree add "${workspacePath}" "${branchName}"`;
+				worktreeArgs = ["worktree", "add", workspacePath, branchName];
 			}
 
-			execSync(worktreeCmd, {
+			execFileSync("git", worktreeArgs, {
 				cwd: repository.repositoryPath,
 				stdio: "pipe",
 			});
@@ -1148,7 +1183,7 @@ export class GitService {
 				}
 				// Fall back to the worktree path itself (git reads its .git file to find the parent)
 				const cwd = mainRepoPath ?? wtPath;
-				execSync(`git worktree remove --force "${wtPath}"`, {
+				execFileSync("git", ["worktree", "remove", "--force", wtPath], {
 					cwd,
 					stdio: "pipe",
 					timeout: 30_000,
