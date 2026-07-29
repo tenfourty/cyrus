@@ -7144,6 +7144,14 @@ ${input.userComment}
 		commentTimestamp?: string,
 	): Promise<void> {
 		const log = this.logger.withContext({ sessionId });
+
+		// Mark resuming BEFORE any async work or branching. Without this, sessions
+		// whose previous turn ended with `status: Complete` carry that stamp
+		// through the new turn — and the next persistence snapshot captures the
+		// stale value, so `getActiveSessions()` (and the auto-resume orchestrator
+		// that reads from it) silently skips this session if cyrus restarts mid-turn.
+		agentSessionManager.markSessionResuming(sessionId);
+
 		// Check for existing runner
 		const existingRunner = session.agentRunner;
 
