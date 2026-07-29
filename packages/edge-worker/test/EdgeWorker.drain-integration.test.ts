@@ -35,22 +35,24 @@ let mockPostFn: ReturnType<typeof vi.fn>;
 let mockGetFn: ReturnType<typeof vi.fn>;
 
 vi.mock("../src/SharedApplicationServer.js", () => ({
-	SharedApplicationServer: vi.fn().mockImplementation(() => ({
-		initializeFastify: vi.fn(),
-		getFastifyInstance: vi.fn(() => ({
-			get: mockGetFn,
-			post: mockPostFn,
-		})),
-		start: vi.fn().mockResolvedValue(undefined),
-		stop: vi.fn().mockResolvedValue(undefined),
-		getWebhookUrl: vi.fn().mockReturnValue("http://localhost:3456/webhook"),
-	})),
+	SharedApplicationServer: vi.fn().mockImplementation(function () {
+		return {
+			initializeFastify: vi.fn(),
+			getFastifyInstance: vi.fn(() => ({
+				get: mockGetFn,
+				post: mockPostFn,
+			})),
+			start: vi.fn().mockResolvedValue(undefined),
+			stop: vi.fn().mockResolvedValue(undefined),
+			getWebhookUrl: vi.fn().mockReturnValue("http://localhost:3456/webhook"),
+		};
+	}),
 }));
 
 let mockSessionMap: Map<string, any>;
 
 vi.mock("../src/AgentSessionManager.js", () => ({
-	AgentSessionManager: vi.fn().mockImplementation(() => {
+	AgentSessionManager: vi.fn().mockImplementation(function () {
 		mockSessionMap = new Map();
 		return {
 			getAllAgentRunners: vi.fn().mockReturnValue([]),
@@ -80,10 +82,12 @@ vi.mock("cyrus-core", async (importOriginal) => {
 		isIssueCommentMentionWebhook: vi.fn().mockReturnValue(false),
 		isIssueNewCommentWebhook: vi.fn().mockReturnValue(false),
 		isIssueUnassignedWebhook: vi.fn().mockReturnValue(false),
-		PersistenceManager: vi.fn().mockImplementation(() => ({
-			loadEdgeWorkerState: vi.fn().mockResolvedValue(null),
-			saveEdgeWorkerState: vi.fn().mockResolvedValue(undefined),
-		})),
+		PersistenceManager: vi.fn().mockImplementation(function () {
+			return {
+				loadEdgeWorkerState: vi.fn().mockResolvedValue(null),
+				saveEdgeWorkerState: vi.fn().mockResolvedValue(undefined),
+			};
+		}),
 		requireLinearWorkspaceId: vi.fn().mockReturnValue("test-workspace"),
 	};
 });
