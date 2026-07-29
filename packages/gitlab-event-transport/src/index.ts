@@ -1,4 +1,9 @@
 export type {
+	GitLabBotIdentity,
+	ResolveGitLabBotIdentityOptions,
+} from "./BotIdentityResolver.js";
+export { resolveGitLabBotIdentity } from "./BotIdentityResolver.js";
+export type {
 	AddAwardEmojiParams,
 	GitLabCommentServiceConfig,
 	GitLabNoteResponse,

@@ -1,3 +1,14 @@
+export type {
+	GitHubAppMetadata,
+	GitHubAppMetadataFetcher,
+	GitHubBotIdentity,
+	ResolveGitHubBotIdentityFromAppOptions,
+	ResolveGitHubBotIdentityFromPatOptions,
+} from "./BotIdentityResolver.js";
+export {
+	resolveGitHubBotIdentityFromApp,
+	resolveGitHubBotIdentityFromPat,
+} from "./BotIdentityResolver.js";
 export type { GitHubAppTokenProviderConfig } from "./GitHubAppTokenProvider.js";
 export {
 	createAppJwt,

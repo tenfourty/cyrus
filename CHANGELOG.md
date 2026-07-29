@@ -4,7 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- **GitLab self-feedback loop on PAT-as-human deployments.** Self-hosted Cyrus configured against a GitLab project with a Personal Access Token owned by a human user (the natural shortcut for GitLab self-host, since GitLab OAuth apps don't issue long-lived headless tokens) would loop forever: every reply Cyrus posted fired a `note` webhook, Cyrus processed it as a fresh user prompt because the note author looked like a human, posted another reply, and so on at ~10-second intervals until the process was killed. The bot identity is now resolved at startup via `GET /api/v4/user` and self-authored notes are dropped unconditionally — no operator config required. `GITLAB_BOT_USERNAME` is still honored as an explicit override. If the PAT can't be resolved (no token configured or auth failed) the GitLab webhook handler is no longer registered at all, so the loop cannot start.
+
+### Changed
+- **Bot self-comment filter and @mention-required filter are now independent settings on both GitHub and GitLab.** Previously a single env var (`GITHUB_BOT_USERNAME` / `GITLAB_BOT_USERNAME`) gated both filters, so operators could not turn on loop protection without also forcing every comment to @-mention the bot by name. Self-comment skip now auto-activates from the resolved bot identity and is always on; the @mention requirement is a separate opt-in flag (`GITHUB_REQUIRE_MENTION` / `GITLAB_REQUIRE_MENTION`, both default `false`). The legacy `*_BOT_USERNAME` env vars are still honored as identity overrides.
+- **GitHub bot identity is resolved automatically.** Self-hosted users running a GitHub App no longer need to set `GITHUB_BOT_USERNAME` for the self-comment filter to work — the App slug (e.g. `repo-a-agent-app[bot]`) is fetched once at startup via `GET /app`. PAT deployments resolve via `GET /user`. The agent context block shipped to skills now uses the resolved bot username instead of the raw env value.
 
 ## [0.2.67] - 2026-07-25
 

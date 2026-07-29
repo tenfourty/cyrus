@@ -93,6 +93,7 @@ import {
 	extractRepoOwner,
 	extractSessionKey,
 	GitHubAppTokenProvider,
+	type GitHubBotIdentity,
 	GitHubCommentService,
 	type GitHubCommentWebhookEvent,
 	GitHubEventTransport,
@@ -102,9 +103,14 @@ import {
 	isIssueCommentPayload,
 	isPullRequestReviewCommentPayload,
 	isPullRequestReviewPayload,
+	resolveGitHubBotIdentityFromApp,
+	resolveGitHubBotIdentityFromPat,
 	stripMention,
 } from "cyrus-github-event-transport";
-import type { GitLabWebhookEvent } from "cyrus-gitlab-event-transport";
+import type {
+	GitLabBotIdentity,
+	GitLabWebhookEvent,
+} from "cyrus-gitlab-event-transport";
 import {
 	extractDiscussionId,
 	extractSessionKey as extractGitLabSessionKey,
@@ -121,6 +127,7 @@ import {
 	GitLabCommentService,
 	GitLabEventTransport,
 	isNoteOnMergeRequest,
+	resolveGitLabBotIdentity,
 	stripMention as stripGitLabMention,
 } from "cyrus-gitlab-event-transport";
 import {
@@ -197,6 +204,16 @@ type CyrusToolsMcpContext = {
 };
 
 /**
+ * Parse a boolean-ish env var value. Accepts "true"/"1"/"yes" (case-insensitive)
+ * as true; everything else (including undefined) is false.
+ */
+function parseBoolEnv(value: string | undefined): boolean {
+	if (!value) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+/**
  * Unified edge worker that **orchestrates**
  *   capturing Linear webhooks,
  *   managing Claude Code processes, and
@@ -214,7 +231,9 @@ export class EdgeWorker extends EventEmitter {
 	private linearEventTransport: LinearEventTransport | null = null; // Single event transport for webhook delivery
 	private gitHubEventTransport: GitHubEventTransport | null = null; // GitHub event transport for forwarded GitHub webhooks
 	private gitHubAppTokenProvider: GitHubAppTokenProvider | null = null; // Self-hosted GitHub App token minting
+	private gitHubBotIdentity: GitHubBotIdentity | null = null; // Resolved GitHub identity used for self-comment loop protection
 	private gitLabEventTransport: GitLabEventTransport | null = null; // GitLab event transport for forwarded GitLab webhooks
+	private gitLabBotIdentity: GitLabBotIdentity | null = null; // Resolved GitLab identity used for self-comment loop protection
 	private slackEventTransport: SlackEventTransport | null = null;
 	private chatSessionHandler: ChatSessionHandler<SlackWebhookEvent> | null =
 		null;
@@ -829,8 +848,8 @@ export class EdgeWorker extends EventEmitter {
 		// 2. Register GitHub and Slack event transports unconditionally
 		// These don't require repositories and must be available during onboarding
 		// for webhook URL verification to succeed.
-		this.registerGitHubEventTransport();
-		this.registerGitLabEventTransport();
+		await this.registerGitHubEventTransport();
+		await this.registerGitLabEventTransport();
 		this.registerSlackEventTransport();
 
 		// 3. Create and register ConfigUpdater (both platforms)
@@ -897,7 +916,7 @@ export class EdgeWorker extends EventEmitter {
 	 * Register the GitHub event transport for receiving forwarded GitHub webhooks from CYHOST.
 	 * This creates a /github-webhook endpoint that handles @cyrusagent mentions on GitHub PRs.
 	 */
-	private registerGitHubEventTransport(): void {
+	private async registerGitHubEventTransport(): Promise<void> {
 		// Use direct GitHub signature verification only when BOTH:
 		// 1. GITHUB_WEBHOOK_SECRET is set (we have the secret to verify)
 		// 2. CYRUS_HOST_EXTERNAL is true (self-hosted: GitHub sends directly to us)
@@ -958,10 +977,9 @@ export class EdgeWorker extends EventEmitter {
 			this.handleError(error);
 		});
 
-		// Register the /github-webhook endpoint
-		this.gitHubEventTransport.register();
-
-		// Initialize GitHub App token provider for self-hosted users
+		// Initialize GitHub App token provider for self-hosted users.
+		// Constructed before identity resolution so the App-metadata fetch
+		// below can reuse the JWT-minted installation token.
 		const appId = process.env.GITHUB_APP_ID;
 		const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
 		if (appId && installationId) {
@@ -976,6 +994,86 @@ export class EdgeWorker extends EventEmitter {
 			);
 		}
 
+		// Resolve the GitHub bot identity used for self-comment loop protection.
+		// App installations are loop-safe by structure (the `<slug>[bot]`
+		// commentAuthor cannot collide with a human commenter) but we still
+		// resolve the slug so the self-skip filter can match by id and so the
+		// status endpoint reports the real identity. PAT deployments are NOT
+		// loop-safe by structure, so identity resolution is the only thing
+		// preventing a feedback loop there.
+		//
+		// Resolution order: GITHUB_BOT_USERNAME override → App slug via
+		// GET /app → PAT identity via GET /user → null (logged warning; the
+		// existing transport is registered anyway because GitHub App users
+		// are loop-safe and PAT-only deployments are rare).
+		const gitHubOverrideUsername = process.env.GITHUB_BOT_USERNAME;
+		if (gitHubOverrideUsername) {
+			this.gitHubBotIdentity = {
+				id: 0,
+				username: gitHubOverrideUsername,
+				commentAuthor: gitHubOverrideUsername,
+			};
+			this.logger.info(
+				`GitHub bot identity set from GITHUB_BOT_USERNAME override: @${gitHubOverrideUsername}`,
+			);
+		} else if (this.gitHubAppTokenProvider) {
+			try {
+				const provider = this.gitHubAppTokenProvider;
+				this.gitHubBotIdentity = await resolveGitHubBotIdentityFromApp({
+					fetchAppMetadata: async () => {
+						const token = await provider.getToken();
+						const response = await fetch("https://api.github.com/app", {
+							method: "GET",
+							headers: {
+								Authorization: `Bearer ${token}`,
+								Accept: "application/vnd.github+json",
+								"X-GitHub-Api-Version": "2022-11-28",
+							},
+						});
+						if (!response.ok) {
+							const body = await response.text().catch(() => "");
+							throw new Error(
+								`GET /app returned ${response.status} ${response.statusText}${body ? ` - ${body}` : ""}`,
+							);
+						}
+						const data = (await response.json()) as {
+							id?: number;
+							slug?: string;
+						};
+						if (typeof data.id !== "number" || typeof data.slug !== "string") {
+							throw new Error(
+								"GitHub /app response missing required id or slug fields",
+							);
+						}
+						return { id: data.id, slug: data.slug };
+					},
+				});
+				this.logger.info(
+					`Resolved GitHub bot identity from App: ${this.gitHubBotIdentity.commentAuthor} (id=${this.gitHubBotIdentity.id})`,
+				);
+			} catch (err) {
+				this.logger.warn(
+					`Failed to resolve GitHub bot identity from App metadata: ${err instanceof Error ? err.message : String(err)}. Self-comment filter falls back to GITHUB_BOT_USERNAME env if set.`,
+				);
+			}
+		} else if (process.env.GITHUB_TOKEN) {
+			try {
+				this.gitHubBotIdentity = await resolveGitHubBotIdentityFromPat({
+					token: process.env.GITHUB_TOKEN,
+				});
+				this.logger.info(
+					`Resolved GitHub bot identity from PAT: @${this.gitHubBotIdentity.username} (id=${this.gitHubBotIdentity.id})`,
+				);
+			} catch (err) {
+				this.logger.warn(
+					`Failed to resolve GitHub bot identity from GITHUB_TOKEN: ${err instanceof Error ? err.message : String(err)}. Self-comment filter falls back to GITHUB_BOT_USERNAME env if set.`,
+				);
+			}
+		}
+
+		// Register the /github-webhook endpoint
+		this.gitHubEventTransport.register();
+
 		this.logger.info(
 			`GitHub event transport registered (${verificationMode} mode)`,
 		);
@@ -986,7 +1084,7 @@ export class EdgeWorker extends EventEmitter {
 	 * Register the GitLab event transport for receiving forwarded GitLab webhooks.
 	 * This creates a /gitlab-webhook endpoint that handles note events on merge requests.
 	 */
-	private registerGitLabEventTransport(): void {
+	private async registerGitLabEventTransport(): Promise<void> {
 		const isExternalHost =
 			process.env.CYRUS_HOST_EXTERNAL?.toLowerCase().trim() === "true";
 		const hasGitlabWebhookSecret =
@@ -997,6 +1095,46 @@ export class EdgeWorker extends EventEmitter {
 		const secret = useSignatureVerification
 			? process.env.GITLAB_WEBHOOK_SECRET!
 			: process.env.CYRUS_API_KEY || "";
+
+		// Resolve the GitLab bot identity before wiring webhook handlers so we
+		// can drop self-authored note webhooks unconditionally. Without this,
+		// PAT-as-human deployments (where GITLAB_ACCESS_TOKEN belongs to a real
+		// user) self-feedback-loop: every reply Cyrus posts fires another note
+		// webhook authored by the PAT owner, which Cyrus treats as a new prompt.
+		// Resolution order: explicit GITLAB_BOT_USERNAME override (id unknown,
+		// match by username only), then GET /api/v4/user with the PAT, then
+		// fail-closed (do not register the handler — webhooks are silently
+		// rejected at the transport level until the operator fixes auth).
+		const gitLabOverrideUsername = process.env.GITLAB_BOT_USERNAME;
+		const gitLabToken = process.env.GITLAB_ACCESS_TOKEN;
+		if (gitLabOverrideUsername) {
+			this.gitLabBotIdentity = {
+				id: 0,
+				username: gitLabOverrideUsername,
+			};
+			this.logger.info(
+				`GitLab bot identity set from GITLAB_BOT_USERNAME override: @${gitLabOverrideUsername}`,
+			);
+		} else if (gitLabToken) {
+			try {
+				this.gitLabBotIdentity = await resolveGitLabBotIdentity({
+					token: gitLabToken,
+				});
+				this.logger.info(
+					`Resolved GitLab bot identity: @${this.gitLabBotIdentity.username} (id=${this.gitLabBotIdentity.id})`,
+				);
+			} catch (err) {
+				this.logger.error(
+					`Failed to resolve GitLab bot identity from GITLAB_ACCESS_TOKEN: ${err instanceof Error ? err.message : String(err)}. Refusing to register GitLab webhook handler to avoid self-feedback loop. Set GITLAB_BOT_USERNAME to override.`,
+				);
+				return;
+			}
+		} else {
+			this.logger.warn(
+				"GITLAB_ACCESS_TOKEN not set and no GITLAB_BOT_USERNAME override; GitLab webhook handler not registered (cannot guarantee self-comment loop protection).",
+			);
+			return;
+		}
 
 		this.gitLabEventTransport = new GitLabEventTransport({
 			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
@@ -1225,11 +1363,13 @@ export class EdgeWorker extends EventEmitter {
 
 			const isPullRequestReview = isPullRequestReviewPayload(event.payload);
 
-			// Skip comments from the bot itself to prevent infinite loops
-			const botUsername = process.env.GITHUB_BOT_USERNAME;
-			if (botUsername && commentAuthor === botUsername) {
+			// Self-comment skip: always-on loop protection. Drop webhooks whose
+			// author is Cyrus's own GitHub identity (resolved at startup via
+			// App metadata or PAT /user, with GITHUB_BOT_USERNAME as override).
+			const botIdentity = this.gitHubBotIdentity;
+			if (botIdentity && commentAuthor === botIdentity.commentAuthor) {
 				this.logger.debug(
-					`Ignoring comment from bot user @${botUsername} on ${repoFullName}#${prNumber}`,
+					`Ignoring comment from bot user @${botIdentity.commentAuthor} on ${repoFullName}#${prNumber}`,
 				);
 				return;
 			}
@@ -1255,15 +1395,22 @@ export class EdgeWorker extends EventEmitter {
 				return;
 			}
 
-			// Only trigger on comments that mention the bot (when configured)
-			// Skip this check for pull_request_review events — reviews don't @mention the bot
+			// Mention-required filter (independent of self-skip). Opt-in via
+			// GITHUB_REQUIRE_MENTION=true. The mention handle is taken from the
+			// resolved identity, not env. Skip for pull_request_review events
+			// since reviews don't @mention the bot.
+			const requireGitHubMention = parseBoolEnv(
+				process.env.GITHUB_REQUIRE_MENTION,
+			);
+			const mentionUsername = botIdentity?.username;
 			if (
+				requireGitHubMention &&
 				!isPullRequestReview &&
-				botUsername &&
-				!commentBody.includes(`@${botUsername}`)
+				mentionUsername &&
+				!commentBody.includes(`@${mentionUsername}`)
 			) {
 				this.logger.debug(
-					`Ignoring comment without @${botUsername} mention on ${repoFullName}#${prNumber}`,
+					`Ignoring comment without @${mentionUsername} mention on ${repoFullName}#${prNumber}`,
 				);
 				return;
 			}
@@ -1386,7 +1533,9 @@ export class EdgeWorker extends EventEmitter {
 
 			// For pull_request_review, the review body IS the task context (no mention to strip)
 			// For other events, strip the bot mention to get the task instructions
-			const mentionHandle = botUsername ? `@${botUsername}` : "@cyrusagent";
+			const mentionHandle = botIdentity?.username
+				? `@${botIdentity.username}`
+				: "@cyrusagent";
 			const taskInstructions = isPullRequestReview
 				? commentBody ||
 					"A reviewer has requested changes on this PR. Read the review comments to understand what needs to be changed."
@@ -1997,19 +2146,44 @@ ${taskSection}`;
 			const mrTitle = extractMRTitle(event);
 			const sessionKey = extractGitLabSessionKey(event);
 
-			// Skip comments from the bot itself to prevent infinite loops
-			const botUsername = process.env.GITLAB_BOT_USERNAME;
-			if (botUsername && noteAuthor === botUsername) {
-				this.logger.debug(
-					`Ignoring note from bot user @${botUsername} on ${projectPath}!${mrIid}`,
-				);
-				return;
+			// Self-comment skip: always-on loop protection. Matches by GitLab
+			// user id first (immutable across username changes) and falls back
+			// to username. Identity is resolved at startup via GET /api/v4/user
+			// with the PAT, or pinned via GITLAB_BOT_USERNAME override. If
+			// identity could not be resolved (no token + no override) the
+			// transport never registered and we never reach this code path.
+			const gitLabIdentity = this.gitLabBotIdentity;
+			const noteAuthorId =
+				typeof event.payload.user?.id === "number"
+					? event.payload.user.id
+					: null;
+			if (gitLabIdentity) {
+				const matchesById =
+					gitLabIdentity.id > 0 &&
+					noteAuthorId !== null &&
+					noteAuthorId === gitLabIdentity.id;
+				const matchesByUsername = noteAuthor === gitLabIdentity.username;
+				if (matchesById || matchesByUsername) {
+					this.logger.debug(
+						`Ignoring self-authored note from @${noteAuthor} on ${projectPath}!${mrIid}`,
+					);
+					return;
+				}
 			}
 
-			// Only trigger on notes that mention the bot (when configured)
-			if (botUsername && !noteBody.includes(`@${botUsername}`)) {
+			// Mention-required filter (independent of self-skip). Opt-in via
+			// GITLAB_REQUIRE_MENTION=true. The mention handle is taken from
+			// the resolved identity, not env.
+			const requireGitLabMention = parseBoolEnv(
+				process.env.GITLAB_REQUIRE_MENTION,
+			);
+			if (
+				requireGitLabMention &&
+				gitLabIdentity &&
+				!noteBody.includes(`@${gitLabIdentity.username}`)
+			) {
 				this.logger.debug(
-					`Ignoring note without @${botUsername} mention on ${projectPath}!${mrIid}`,
+					`Ignoring note without @${gitLabIdentity.username} mention on ${projectPath}!${mrIid}`,
 				);
 				return;
 			}
@@ -2062,7 +2236,9 @@ ${taskSection}`;
 			}
 
 			// Strip the bot mention to get the task instructions
-			const mentionHandle = botUsername ? `@${botUsername}` : "@cyrusagent";
+			const mentionHandle = gitLabIdentity?.username
+				? `@${gitLabIdentity.username}`
+				: "@cyrusagent";
 			const taskInstructions = stripGitLabMention(noteBody, mentionHandle);
 
 			// Check for an existing multi-repo session that includes this repository
@@ -6279,8 +6455,17 @@ ${input.userComment}
 	 * correct bot account without hardcoding.
 	 */
 	private buildAgentContextBlock(): string {
-		const githubBot = process.env.GITHUB_BOT_USERNAME || "";
-		const gitlabBot = process.env.GITLAB_BOT_USERNAME || "";
+		// Prefer resolved identity (App slug, PAT login) over the legacy env
+		// override so skills get the real bot account name without operators
+		// needing to set GITHUB_BOT_USERNAME / GITLAB_BOT_USERNAME by hand.
+		const githubBot =
+			this.gitHubBotIdentity?.username ||
+			process.env.GITHUB_BOT_USERNAME ||
+			"";
+		const gitlabBot =
+			this.gitLabBotIdentity?.username ||
+			process.env.GITLAB_BOT_USERNAME ||
+			"";
 
 		if (!githubBot && !gitlabBot) {
 			return "";
