@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Cyrus can navigate your code properly again in Linear and GitHub sessions. Since v0.2.67 it had quietly lost the ability to jump to a definition, find all references to a symbol, look up a type or docstring, list the symbols in a file, search symbols across the workspace, find implementations of an interface, and trace what calls what — so it fell back to plain text search and gave weaker answers on questions about unfamiliar code. No configuration change is needed.
 
 ## [0.2.67] - 2026-07-25
 
