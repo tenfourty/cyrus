@@ -46,6 +46,8 @@ export class LinearEventTransport
 	private logger: ILogger;
 	private messageTranslator: LinearMessageTranslator;
 	private translationContext: TranslationContext;
+	/** Optional predicate: returns true when the webhook should be rejected with 503. */
+	private drainGate: ((raw: unknown) => boolean) | null = null;
 
 	constructor(
 		config: LinearEventTransportConfig,
@@ -70,6 +72,21 @@ export class LinearEventTransport
 	 */
 	setTranslationContext(context: TranslationContext): void {
 		this.translationContext = { ...this.translationContext, ...context };
+	}
+
+	/**
+	 * Set a drain gate predicate.  When set, the handler calls this function
+	 * with the raw (unparsed) webhook body **before** emitting any event.  If the
+	 * predicate returns `true` the request is rejected with HTTP 503 + a
+	 * `Retry-After: 30` header so Linear will redeliver after restart.
+	 *
+	 * The predicate receives the raw body so the caller (EdgeWorker) can inspect
+	 * the payload and allow stop-signal webhooks through even during drain.
+	 *
+	 * Pass `null` to remove the gate.
+	 */
+	setDrainGate(predicate: ((raw: unknown) => boolean) | null): void {
+		this.drainGate = predicate;
 	}
 
 	/**
@@ -123,6 +140,19 @@ export class LinearEventTransport
 	}
 
 	/**
+	 * Check the drain gate and reply with 503 if the webhook should be rejected.
+	 * Returns `true` when the caller should abort processing.
+	 */
+	private checkDrainGate(body: unknown, reply: FastifyReply): boolean {
+		if (this.drainGate?.(body)) {
+			this.logger.info("[LinearEventTransport] Rejecting webhook during drain");
+			reply.code(503).header("Retry-After", "30").send({ error: "draining" });
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Handle webhook in direct mode using Linear's signature verification
 	 */
 	private async handleDirectWebhook(
@@ -171,6 +201,9 @@ export class LinearEventTransport
 
 			const payload = request.body as LinearWebhookPayload;
 
+			// Check drain gate AFTER signature verification (so we don't 503 bad actors)
+			if (this.checkDrainGate(payload, reply)) return;
+
 			// Emit "event" for legacy IAgentEventTransport compatibility
 			this.emit("event", payload);
 
@@ -212,6 +245,9 @@ export class LinearEventTransport
 
 		try {
 			const payload = request.body as LinearWebhookPayload;
+
+			// Check drain gate AFTER auth so we don't 503 unauthenticated callers
+			if (this.checkDrainGate(payload, reply)) return;
 
 			// Emit "event" for legacy IAgentEventTransport compatibility
 			this.emit("event", payload);
