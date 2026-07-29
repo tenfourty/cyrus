@@ -10,10 +10,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EdgeWorker } from "../src/EdgeWorker.js";
 import { DrainController } from "../src/DrainController.js";
-import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
 import type { DrainOutcome } from "../src/drainTypes.js";
+import { EdgeWorker } from "../src/EdgeWorker.js";
+import type { EdgeWorkerConfig, RepositoryConfig } from "../src/types.js";
 
 // ── global mocks ────────────────────────────────────────────────────────────
 
@@ -161,8 +161,12 @@ describe("EdgeWorker — drain integration", () => {
 		// Capture handlers by calling registerDrainEndpoints directly
 		const capturedPost: Map<string, any> = new Map();
 		const capturedGet: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) => capturedPost.set(path, handler));
-		mockGetFn.mockImplementation((path: string, handler: any) => capturedGet.set(path, handler));
+		mockPostFn.mockImplementation((path: string, handler: any) =>
+			capturedPost.set(path, handler),
+		);
+		mockGetFn.mockImplementation((path: string, handler: any) =>
+			capturedGet.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -173,7 +177,9 @@ describe("EdgeWorker — drain integration", () => {
 		await adminDrainHandler({}, reply);
 
 		expect(reply.status).toHaveBeenCalledWith(409);
-		expect(reply.send).toHaveBeenCalledWith({ error: "drain-already-in-progress" });
+		expect(reply.send).toHaveBeenCalledWith({
+			error: "drain-already-in-progress",
+		});
 	});
 
 	// ── test 3 ───────────────────────────────────────────────────────────────
@@ -183,11 +189,17 @@ describe("EdgeWorker — drain integration", () => {
 
 		const dc: DrainController = (edgeWorker as any).getDrainController();
 		vi.spyOn(dc, "isDraining").mockReturnValue(false);
-		vi.spyOn(dc, "beginDrain").mockResolvedValue({ kind: "drained", durationMs: 0, sessionCount: 0 });
+		vi.spyOn(dc, "beginDrain").mockResolvedValue({
+			kind: "drained",
+			durationMs: 0,
+			sessionCount: 0,
+		});
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
 		const capturedPost: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) => capturedPost.set(path, handler));
+		mockPostFn.mockImplementation((path: string, handler: any) =>
+			capturedPost.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -222,7 +234,9 @@ describe("EdgeWorker — drain integration", () => {
 		vi.spyOn(dc, "getStatus").mockReturnValue(fakeStatus);
 
 		const capturedGet: Map<string, any> = new Map();
-		mockGetFn.mockImplementation((path: string, handler: any) => capturedGet.set(path, handler));
+		mockGetFn.mockImplementation((path: string, handler: any) =>
+			capturedGet.set(path, handler),
+		);
 
 		(edgeWorker as any).registerDrainEndpoints();
 
@@ -259,9 +273,11 @@ describe("EdgeWorker — drain integration", () => {
 
 		// Patch savePersistedState to capture state at save time
 		let capturedSession: any = null;
-		vi.spyOn(edgeWorker as any, "savePersistedState").mockImplementation(async () => {
-			capturedSession = { ...mockSessionMap.get("s1") };
-		});
+		vi.spyOn(edgeWorker as any, "savePersistedState").mockImplementation(
+			async () => {
+				capturedSession = { ...mockSessionMap.get("s1") };
+			},
+		);
 
 		const forceKillOutcome: DrainOutcome = {
 			kind: "force-killed",
@@ -271,7 +287,11 @@ describe("EdgeWorker — drain integration", () => {
 					sessionId: "s1",
 					pendingToolUses: [
 						{ id: "tool1", name: "Bash", startedAt: Date.now() - 5000 },
-						{ id: "tool2", name: "mcp__linear__save_comment", startedAt: Date.now() - 3000 },
+						{
+							id: "tool2",
+							name: "mcp__linear__save_comment",
+							startedAt: Date.now() - 3000,
+						},
 					],
 				},
 			],
@@ -283,10 +303,13 @@ describe("EdgeWorker — drain integration", () => {
 		expect(capturedSession.lastInFlightToolUses).toBeDefined();
 		expect(capturedSession.lastInFlightToolUses).toHaveLength(2);
 		expect(capturedSession.lastInFlightToolUses[0].name).toBe("Bash");
-		expect(capturedSession.lastInFlightToolUses[1].name).toBe("mcp__linear__save_comment");
-		expect(capturedSession.lastInFlightToolUses[0].killedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(capturedSession.lastInFlightToolUses[1].name).toBe(
+			"mcp__linear__save_comment",
+		);
+		expect(capturedSession.lastInFlightToolUses[0].killedAt).toMatch(
+			/^\d{4}-\d{2}-\d{2}T/,
+		);
 	});
-
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -298,22 +321,4 @@ function makeReply() {
 		header: vi.fn().mockReturnThis(),
 	};
 	return r;
-}
-
-function getRegisteredPostHandler(
-	postFn: ReturnType<typeof vi.fn>,
-	path: string,
-): ((req: any, reply: any) => Promise<any>) | undefined {
-	const calls = postFn.mock.calls as Array<[string, (req: any, reply: any) => Promise<any>]>;
-	const match = calls.find(([p]) => p === path);
-	return match?.[1];
-}
-
-function getRegisteredGetHandler(
-	getFn: ReturnType<typeof vi.fn>,
-	path: string,
-): ((req: any, reply: any) => Promise<any>) | undefined {
-	const calls = getFn.mock.calls as Array<[string, (req: any, reply: any) => Promise<any>]>;
-	const match = calls.find(([p]) => p === path);
-	return match?.[1];
 }

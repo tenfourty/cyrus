@@ -10,8 +10,8 @@
  *   - SIGINT and uncaughtException bypass drain entirely.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DrainOutcome } from "cyrus-edge-worker";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Application } from "./Application.js";
 
 /**
@@ -124,9 +124,10 @@ describe("Application signal-handler drain behaviour", () => {
 
 		const abortDrainFn = vi.fn();
 		const neverResolvingBeginDrain = vi.fn(
-			() => new Promise<DrainOutcome>(() => {
-				// intentionally never resolves
-			}),
+			() =>
+				new Promise<DrainOutcome>(() => {
+					// intentionally never resolves
+				}),
 		);
 
 		(app as any).worker = {
@@ -139,7 +140,9 @@ describe("Application signal-handler drain behaviour", () => {
 		};
 		(app as any).errorReporter = { flush: vi.fn().mockResolvedValue(true) };
 
-		vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {}) as never);
+		vi.spyOn(process, "exit").mockImplementation(((
+			_code?: number,
+		) => {}) as never);
 
 		app.setupSignalHandlers();
 
@@ -213,7 +216,9 @@ describe("Application signal-handler drain behaviour", () => {
 		};
 		(app as any).errorReporter = { flush: vi.fn().mockResolvedValue(true) };
 
-		vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {}) as never);
+		vi.spyOn(process, "exit").mockImplementation(((
+			_code?: number,
+		) => {}) as never);
 
 		app.setupSignalHandlers();
 

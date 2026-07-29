@@ -60,10 +60,7 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		} as unknown as SDKAssistantMessage;
 	}
 
-	function buildToolResult(
-		toolUseId: string,
-		isError = false,
-	): SDKUserMessage {
+	function buildToolResult(toolUseId: string, isError = false): SDKUserMessage {
 		return {
 			type: "user",
 			session_id: "claude-session",
@@ -143,10 +140,16 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		const events: unknown[] = [];
 		manager.on("tool_use_started", (event) => events.push(event));
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_1", "Bash", { command: "ls" }));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_1", "Bash", { command: "ls" }),
+		);
 
 		expect(events).toHaveLength(1);
-		const event = events[0] as { sessionId: string; toolUse: { id: string; name: string; startedAt: number } };
+		const event = events[0] as {
+			sessionId: string;
+			toolUse: { id: string; name: string; startedAt: number };
+		};
 		expect(event.sessionId).toBe(sessionId);
 		expect(event.toolUse.id).toBe("toolu_1");
 		expect(event.toolUse.name).toBe("Bash");
@@ -157,11 +160,21 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		const completedEvents: unknown[] = [];
 		manager.on("tool_use_completed", (event) => completedEvents.push(event));
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_2", "Read", { file_path: "/tmp/x" }));
-		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_2", false));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_2", "Read", { file_path: "/tmp/x" }),
+		);
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolResult("toolu_2", false),
+		);
 
 		expect(completedEvents).toHaveLength(1);
-		const event = completedEvents[0] as { sessionId: string; toolUseId: string; isError: boolean };
+		const event = completedEvents[0] as {
+			sessionId: string;
+			toolUseId: string;
+			isError: boolean;
+		};
 		expect(event.sessionId).toBe(sessionId);
 		expect(event.toolUseId).toBe("toolu_2");
 		expect(event.isError).toBe(false);
@@ -171,8 +184,14 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		const completedEvents: unknown[] = [];
 		manager.on("tool_use_completed", (event) => completedEvents.push(event));
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_err", "Bash", { command: "false" }));
-		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_err", true));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_err", "Bash", { command: "false" }),
+		);
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolResult("toolu_err", true),
+		);
 
 		expect(completedEvents).toHaveLength(1);
 		const event = completedEvents[0] as { isError: boolean };
@@ -194,8 +213,13 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		// Initially empty
 		expect(manager.getPendingToolUseIds(sessionId).size).toBe(0);
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_3", "Write", {}));
-		expect(manager.getPendingToolUseIds(sessionId)).toEqual(new Set(["toolu_3"]));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_3", "Write", {}),
+		);
+		expect(manager.getPendingToolUseIds(sessionId)).toEqual(
+			new Set(["toolu_3"]),
+		);
 
 		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_3"));
 		expect(manager.getPendingToolUseIds(sessionId).size).toBe(0);
@@ -203,7 +227,10 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 
 	it("getPendingToolUseDetails returns metadata for open tool uses", async () => {
 		const before = Date.now();
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_4", "Grep", { pattern: "foo" }));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_4", "Grep", { pattern: "foo" }),
+		);
 		const after = Date.now();
 
 		const details = manager.getPendingToolUseDetails(sessionId);
@@ -215,7 +242,10 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 	});
 
 	it("getPendingToolUseDetails returns empty after tool_result", async () => {
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_5", "Bash", {}));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_5", "Bash", {}),
+		);
 		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_5"));
 
 		expect(manager.getPendingToolUseDetails(sessionId)).toHaveLength(0);
@@ -251,10 +281,19 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		const completedEvents: unknown[] = [];
 		manager.on("tool_use_completed", (event) => completedEvents.push(event));
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_replay", "Bash", {}));
-		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_replay"));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_replay", "Bash", {}),
+		);
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolResult("toolu_replay"),
+		);
 		// Second (duplicate) result for same tool_use_id
-		await manager.handleClaudeMessage(sessionId, buildToolResult("toolu_replay"));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolResult("toolu_replay"),
+		);
 
 		// Only one completed event should have fired
 		expect(completedEvents).toHaveLength(1);
@@ -264,16 +303,25 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		const startedEvents: unknown[] = [];
 		manager.on("tool_use_started", (event) => startedEvents.push(event));
 
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_dup", "Bash", {}));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_dup", "Bash", {}),
+		);
 		// Hypothetical duplicate (shouldn't happen in practice but must be safe)
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_dup", "Bash", {}));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_dup", "Bash", {}),
+		);
 
 		// Only one started event should have fired for the same ID
 		expect(startedEvents).toHaveLength(1);
 	});
 
 	it("pending tool uses are cleaned up on session_terminal", async () => {
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_orphan", "Bash", {}));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_orphan", "Bash", {}),
+		);
 		// Orphaned — no tool_result before result message
 		expect(manager.getPendingToolUseIds(sessionId).size).toBe(1);
 
@@ -285,7 +333,10 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 
 	it("clears pending tool-use tracking when removeSession is called", async () => {
 		// arrange: emit a tool_use, do not emit tool_result, do not emit result
-		await manager.handleClaudeMessage(sessionId, buildToolUse("toolu_remove", "Bash", {}));
+		await manager.handleClaudeMessage(
+			sessionId,
+			buildToolUse("toolu_remove", "Bash", {}),
+		);
 		expect(manager.getPendingToolUseIds(sessionId).size).toBe(1);
 
 		// act: call removeSession
@@ -322,7 +373,10 @@ describe("AgentSessionManager - tool_use lifecycle events", () => {
 		manager.addAgentRunner(oldSessionId, runnerStub);
 
 		// emit a tool_use that will be orphaned
-		await manager.handleClaudeMessage(oldSessionId, buildToolUse("toolu_cleanup", "Bash", {}));
+		await manager.handleClaudeMessage(
+			oldSessionId,
+			buildToolUse("toolu_cleanup", "Bash", {}),
+		);
 		expect(manager.getPendingToolUseIds(oldSessionId).size).toBe(1);
 
 		// manually mark session as complete and force it to be old (manipulate internal state for test)

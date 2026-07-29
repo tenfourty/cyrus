@@ -142,14 +142,17 @@ import {
 import { Sessions, streamableHttp } from "fastify-mcp";
 import { ActivityPoster } from "./ActivityPoster.js";
 import { AgentSessionManager } from "./AgentSessionManager.js";
-import { DrainController, type DrainControllerInput } from "./DrainController.js";
-import { loadDrainConfigFromEnv, type DrainOutcome } from "./drainTypes.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
 import { LiveChatRepositoryProvider } from "./ChatRepositoryProvider.js";
 import { ChatSessionHandler } from "./ChatSessionHandler.js";
 import { ConfigManager, type RepositoryChanges } from "./ConfigManager.js";
 import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
+import {
+	DrainController,
+	type DrainControllerInput,
+} from "./DrainController.js";
+import { type DrainOutcome, loadDrainConfigFromEnv } from "./drainTypes.js";
 import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
 import { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";
@@ -196,7 +199,9 @@ import { UserAccessControl } from "./UserAccessControl.js";
 function looksLikeStopSignal(raw: unknown): boolean {
 	if (!raw || typeof raw !== "object") return false;
 	const payload = raw as Record<string, unknown>;
-	const agentActivity = payload.agentActivity as Record<string, unknown> | undefined;
+	const agentActivity = payload.agentActivity as
+		| Record<string, unknown>
+		| undefined;
 	if (!agentActivity) return false;
 
 	// Explicit stop signal field
@@ -205,7 +210,10 @@ function looksLikeStopSignal(raw: unknown): boolean {
 	// Text stop request (mirrors regex in handleUserPromptedAgentActivity)
 	const body =
 		(agentActivity.content as Record<string, unknown> | undefined)?.body ?? "";
-	if (typeof body === "string" && /^\s*stop(\s+session|\s+working)?[\s.!?]*$/i.test(body)) {
+	if (
+		typeof body === "string" &&
+		/^\s*stop(\s+session|\s+working)?[\s.!?]*$/i.test(body)
+	) {
 		return true;
 	}
 	return false;
@@ -649,7 +657,8 @@ export class EdgeWorker extends EventEmitter {
 		// `unknown` cast bridges the typed class to the lean interface expected
 		// by DrainControllerInput without importing the internal interface.
 		this.drainController = new DrainController({
-			agentSessionManager: this.agentSessionManager as unknown as DrainControllerInput["agentSessionManager"],
+			agentSessionManager: this
+				.agentSessionManager as unknown as DrainControllerInput["agentSessionManager"],
 			config: loadDrainConfigFromEnv(),
 			logger: this.logger,
 		});
