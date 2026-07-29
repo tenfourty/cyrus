@@ -151,6 +151,7 @@ import { DefaultSkillsDeployer } from "./DefaultSkillsDeployer.js";
 import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
 import { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";
+import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
 import { McpConfigService } from "./McpConfigService.js";
 import { PromptBuilder } from "./PromptBuilder.js";
 import type {
@@ -175,7 +176,6 @@ import {
 	SkillsPluginResolver,
 } from "./SkillsPluginResolver.js";
 import { SlackChatAdapter } from "./SlackChatAdapter.js";
-import { deriveGitlabApiBaseUrl } from "./gitlab-api-base-url.js";
 import type { IActivitySink } from "./sinks/IActivitySink.js";
 import { LinearActivitySink } from "./sinks/LinearActivitySink.js";
 import { ToolPermissionResolver } from "./ToolPermissionResolver.js";
@@ -371,9 +371,7 @@ export class EdgeWorker extends EventEmitter {
 		// falling out of sync on self-hosted GitLab deployments.
 		this.gitlabApiBaseUrl = deriveGitlabApiBaseUrl(config.repositories);
 		this.gitLabCommentService = new GitLabCommentService(
-			this.gitlabApiBaseUrl
-				? { apiBaseUrl: this.gitlabApiBaseUrl }
-				: undefined,
+			this.gitlabApiBaseUrl ? { apiBaseUrl: this.gitlabApiBaseUrl } : undefined,
 		);
 
 		// Initialize global session registry (centralized session storage)
