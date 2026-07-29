@@ -70,6 +70,25 @@ describe("AgentSessionManager stop-session behavior", () => {
 		);
 	});
 
+	it("exposes consumeStopRequest publicly so the prompt handler can clear stale stop flags", () => {
+		// Background: requestSessionStop sets a flag that, prior to this change,
+		// was consumed ONLY by completeSession (on result arrival) or by
+		// removeSession (on issue-terminal cleanup). A user-initiated stop with
+		// no subsequent terminal cleanup left the flag set forever, and every
+		// future prompt to the same session aborted at shouldAbortSpawn.
+		// Exposing consumeStopRequest lets the new-prompt entry path clear the
+		// flag so the user's next prompt actually runs.
+		manager.requestSessionStop(sessionId);
+		expect(manager.isStopRequested(sessionId)).toBe(true);
+
+		const wasCleared = manager.consumeStopRequest(sessionId);
+		expect(wasCleared).toBe(true);
+		expect(manager.isStopRequested(sessionId)).toBe(false);
+
+		const secondCall = manager.consumeStopRequest(sessionId);
+		expect(secondCall).toBe(false);
+	});
+
 	it("handles non max-turn execution errors gracefully", async () => {
 		await manager.completeSession(sessionId, {
 			type: "result",

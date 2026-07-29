@@ -133,6 +133,7 @@ describe("EdgeWorker - System Prompt Resume", () => {
 		// Mock AgentSessionManager
 		mockAgentSessionManager = {
 			createCyrusAgentSession: vi.fn(),
+			consumeStopRequest: vi.fn(),
 			getSession: vi.fn().mockReturnValue({
 				id: "agent-session-123",
 				externalSessionId: "agent-session-123",
