@@ -658,8 +658,8 @@ When creating sub-issues that should be handled in a DIFFERENT repository, use o
 The system evaluates routing methods in this strict priority order. The FIRST match wins:
 
 1. **Description Tag (Priority 1 - Highest, Recommended)**: Add \`[repo=repo-name]\` to the sub-issue description.
-   - Multiple repos: \`[repo=repo1]\` and \`[repo=repo2]\`, or \`repos=repo1,repo2\`
-   - Base branch override: \`[repo=repo-name#branch-name]\` to target a specific branch instead of the default
+   - Multiple repos: \`[repo=repo1,repo2]\` (comma-separated in a single bracket), \`[repo=repo1]\` and \`[repo=repo2]\` (separate tags), or unbracketed \`repos=repo1,repo2\`
+   - Base branch override: \`[repo=repo-name#branch-name]\` to target a specific branch instead of the default; a trailing \`#branch\` on a comma-separated tag (e.g. \`[repo=repo1,repo2#branch-name]\`) applies to every repo in that tag, or use separate tags for per-repo overrides
    - Unbracketed syntax also works: \`repo=repo-name\` or \`repo=repo-name#branch\`
 2. **Routing Labels (Priority 2)**: Apply a label configured to route to the target repository.
 3. **Project Assignment (Priority 3)**: Add the issue to a project that routes to the target repository.
