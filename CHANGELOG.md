@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+- Fixed a memory leak with `CYRUS_ENABLE_WARM_SESSIONS=1` enabled, where unused pre-warmed sessions could accumulate across restarts and grow memory usage over time. Idle warm sessions are now automatically cleaned up, with the idle period configurable via `CYRUS_WARM_INSTANCE_TTL_MS`.
 
 ## [0.2.67] - 2026-07-25
 
