@@ -4,7 +4,8 @@ This changelog documents internal development changes, refactors, tooling update
 
 ## [Unreleased]
 
-_No internal-only changes._
+### Changed
+- Extracted GitLab self-hosted API base URL derivation into a shared, unit-tested helper (`deriveGitlabApiBaseUrl`), with no behavior change.
 
 ## [0.2.67] - 2026-07-25
 
