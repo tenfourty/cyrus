@@ -7,6 +7,11 @@ This changelog documents internal development changes, refactors, tooling update
 ### Fixed
 - Turn-resilience polish (follow-up to the unreleased stall-watchdog / elicitation-timeout work): the elicitation-timeout notice now renders sub-minute custom `CYRUS_ELICITATION_TIMEOUT_MS` values as seconds instead of "0 minutes"; dropped a redundant debug log that duplicated the info log in the late-answer drop path; corrected a stale comment on the durable assistant-error capture (it keeps the last *errored* assistant, not the last assistant).
 
+## [0.2.67] - 2026-07-25
+
+### Added
+- F1 release smoke validating the v0.2.67 release branch can start the F1 server, create an issue, start a Gemini-backed session, render/paginate activities, and stop cleanly before publishing. ([CYPACK-1404](https://linear.app/ceedar/issue/CYPACK-1404/run-a-release), [#1386](https://github.com/cyrusagents/cyrus/pull/1386))
+
 ## [0.2.66] - 2026-06-19
 
 ### Security
