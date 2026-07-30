@@ -8,7 +8,13 @@ import type {
 function ctx(issueState: IssueStateSnapshot | undefined): ResumeFilterContext {
 	return {
 		now: Date.now(),
-		config: { concurrency: 2, staggerMs: [0, 0], maxAgeMs: 0, holdLabel: "" },
+		config: {
+			concurrency: 2,
+			staggerMs: [0, 0],
+			maxAgeMs: 0,
+			maxAttempts: 3,
+			holdLabel: "",
+		},
 		repository: { autoResumeOnStartup: true } as any,
 		issueState,
 	};
@@ -40,6 +46,20 @@ describe("IssueStateFilter", () => {
 	it("skips sessions whose issue state type is 'canceled'", () => {
 		expect(
 			filter.evaluate(session, ctx({ stateType: "canceled", labels: [] })),
+		).toBe("issue-state-changed");
+	});
+
+	it("skips sessions whose issue was moved back to the backlog during downtime", () => {
+		// Parking an issue in the backlog is how a human says "not now".
+		// Respawning an agent on it at the next boot overrides that.
+		expect(
+			filter.evaluate(session, ctx({ stateType: "backlog", labels: [] })),
+		).toBe("issue-state-changed");
+	});
+
+	it("skips sessions whose issue was moved to triage during downtime", () => {
+		expect(
+			filter.evaluate(session, ctx({ stateType: "triage", labels: [] })),
 		).toBe("issue-state-changed");
 	});
 

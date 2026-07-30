@@ -150,6 +150,7 @@ describe("EdgeWorker - System Prompt Resume", () => {
 				claudeRunner: mockClaudeRunner,
 			}),
 			addAgentRunner: vi.fn(),
+			clearStopIntent: vi.fn(),
 			getAllClaudeRunners: vi.fn().mockReturnValue([]),
 			serializeState: vi.fn().mockReturnValue({ sessions: {}, entries: {} }),
 			restoreState: vi.fn(),

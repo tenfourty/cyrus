@@ -145,12 +145,16 @@ import { AgentSessionManager } from "./AgentSessionManager.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
 import { AttachmentService } from "./AttachmentService.js";
 import { AutoResumeOrchestrator } from "./auto-resume/AutoResumeOrchestrator.js";
+import { AttemptBudgetFilter } from "./auto-resume/filters/AttemptBudgetFilter.js";
 import { HoldLabelFilter } from "./auto-resume/filters/HoldLabelFilter.js";
 import { IssueStateFilter } from "./auto-resume/filters/IssueStateFilter.js";
 import { RepositoryOptInFilter } from "./auto-resume/filters/RepositoryOptInFilter.js";
 import { RunnerTypeFilter } from "./auto-resume/filters/RunnerTypeFilter.js";
 import { StalenessFilter } from "./auto-resume/filters/StalenessFilter.js";
+import { StatusActiveFilter } from "./auto-resume/filters/StatusActiveFilter.js";
+import { StopIntentFilter } from "./auto-resume/filters/StopIntentFilter.js";
 import { WorktreeExistsFilter } from "./auto-resume/filters/WorktreeExistsFilter.js";
+import { formatSkipBreakdown } from "./auto-resume/skipBreakdown.js";
 import type {
 	AutoResumeConfig,
 	IssueStateSnapshot,
@@ -221,6 +225,14 @@ export class EdgeWorker extends EventEmitter {
 	private activitySinks: Map<string, IActivitySink> = new Map(); // Maps Linear workspace ID to activity sink (one per workspace, mirrors issueTrackers)
 	private sessionRepositories: Map<string, string> = new Map(); // Maps session ID to repository ID
 	private lastStopTimeBySession: Map<string, number> = new Map(); // Maps session ID to timestamp of last stop signal (for double-stop detection)
+	/**
+	 * Set as soon as `stop()` begins. Long-running startup work polls it so
+	 * it can bail out instead of racing shutdown — notably the auto-resume
+	 * drain, which would otherwise keep spawning `claude` subprocesses after
+	 * the shutdown handler has already walked the runner list, leaving them
+	 * orphaned when the process exits.
+	 */
+	private isStopping = false;
 	private warmInstances: Map<string, WarmQuery> = new Map(); // Pre-warmed Claude sessions keyed by agentSessionId
 	private issueTrackers: Map<string, IIssueTrackerService> = new Map(); // one issue tracker per Linear workspace (keyed by linearWorkspaceId)
 	private linearEventTransport: LinearEventTransport | null = null; // Single event transport for webhook delivery
@@ -639,15 +651,6 @@ export class EdgeWorker extends EventEmitter {
 		// Load persisted state for each repository
 		await this.loadPersistedState();
 
-		// Pre-warm the 30 most recent Claude sessions in the background
-		// so their first query after restart has near-zero cold-start latency.
-		// Disabled by default; opt in with CYRUS_ENABLE_WARM_SESSIONS=1.
-		if (this.isWarmSessionsEnabled()) {
-			this.warmupRecentSessions(30).catch((err) => {
-				this.logger.warn("Session warmup failed (non-fatal):", err);
-			});
-		}
-
 		// Start config file watcher via ConfigManager
 		this.configManager.on(
 			"configChanged",
@@ -707,17 +710,41 @@ export class EdgeWorker extends EventEmitter {
 		// Initialize and register components BEFORE starting server (routes must be registered before listen())
 		await this.initializeComponents();
 
-		// Auto-resume in-flight sessions after restart. Default-off per repo;
-		// non-blocking — `start()` returns once the orchestrator is kicked off,
-		// the queued resumes drain in the background while the webhook server
-		// comes up. Sessions not yet drained continue to be lazy-resumable
-		// through the normal webhook path.
-		this.runAutoResumeOrchestrator().catch((err) => {
+		// Auto-resume in-flight sessions after restart. Default-off per repo,
+		// so this is a no-op (and returns immediately) unless an operator has
+		// opted a repository in.
+		//
+		// Deliberately AWAITED, and deliberately before
+		// `sharedApplicationServer.start()`. Firing it unawaited left a window
+		// where the webhook server was already accepting prompts while the
+		// drain was still spawning runners: a prompt arriving for a session
+		// still queued in the drain would take the normal resume path and put
+		// a second agent in the same worktree. Draining first means the
+		// webhook path only ever sees sessions the orchestrator has finished
+		// with. Anything the drain skipped stays lazily resumable as before.
+		try {
+			await this.runAutoResumeOrchestrator();
+		} catch (err) {
 			this.logger.warn(
 				"Auto-resume orchestrator failed (non-fatal):",
 				err instanceof Error ? err : new Error(String(err)),
 			);
-		});
+		}
+
+		// Pre-warm the 30 most recent Claude sessions so their first query
+		// after restart has near-zero cold-start latency. Disabled by default;
+		// opt in with CYRUS_ENABLE_WARM_SESSIONS=1.
+		//
+		// Runs AFTER the auto-resume drain, not alongside it: warmup resumes
+		// Claude sessions too, and a warmup racing the drain can put two
+		// subprocesses on the same Claude session in the same worktree. By
+		// this point every auto-resumed session already has a live runner, so
+		// warmup's own "already has a runner" check skips them.
+		if (this.isWarmSessionsEnabled()) {
+			this.warmupRecentSessions(30).catch((err) => {
+				this.logger.warn("Session warmup failed (non-fatal):", err);
+			});
+		}
 
 		// Refresh GitHub webhook allowlist from /meta API (non-blocking)
 		if (this.webhookIpValidator.isEnabled()) {
@@ -2610,6 +2637,12 @@ ${taskSection}`;
 	 * Stop the edge worker
 	 */
 	async stop(): Promise<void> {
+		// Signal cooperative cancellation FIRST, before any awaits. An
+		// in-flight auto-resume drain polls this between sessions; without it
+		// the drain keeps creating runners after we have already killed the
+		// ones we knew about, and those subprocesses outlive the process.
+		this.isStopping = true;
+
 		// Stop config file watcher
 		await this.configManager.stop();
 
@@ -5080,6 +5113,12 @@ ${taskSection}`;
 			return;
 		}
 
+		// Anything past this point is the user asking for more work, which
+		// revokes any earlier stop. Clearing the persisted stop stamp here
+		// (rather than in the resume path) keeps start-time auto-resume from
+		// clearing its own guard when it respawns a session.
+		this.agentSessionManager.clearStopIntent(agentSessionId);
+
 		// Branch 1.5: Handle re-prompt for parked (blocked-by) sessions
 		// When a user re-prompts and the session is parked, re-check blocking status.
 		// If blockers are resolved, wake the session immediately.
@@ -6742,11 +6781,14 @@ ${input.userComment}
 		if (!optedIn) return;
 
 		const config = this.resolveAutoResumeConfig();
-		const aggregateManager = this.getAnyAgentSessionManager();
-		if (!aggregateManager) return;
+		const aggregateManager = this.agentSessionManager;
 
 		const orchestrator = new AutoResumeOrchestrator({
-			sessions: () => aggregateManager.getActiveSessions(),
+			// Source ALL persisted sessions (not just status===Active). The
+			// StatusActiveFilter below records non-Active sessions in the run
+			// summary as `status-not-active` skips so the journal surfaces
+			// stuck-status edge cases instead of silently dropping them.
+			sessions: () => aggregateManager.getAllSessions(),
 			repositoryFor: (session) => {
 				const repoId = session.repositories[0]?.repositoryId;
 				return repoId ? this.repositories.get(repoId) : undefined;
@@ -6772,9 +6814,23 @@ ${input.userComment}
 				// same notifyRetired error indefinitely.
 				this.agentSessionManager.removeSession(session.id);
 			},
+			recordResumeAttempt: (session) => {
+				aggregateManager.recordAutoResumeAttempt(session.id);
+			},
+			clearResumeAttempts: (session) => {
+				aggregateManager.clearAutoResumeAttempts(session.id);
+			},
+			shouldAbort: () => this.isStopping,
 			logger: this.logger,
 			config,
 			filters: [
+				// Order matters only for which reason gets reported first; all
+				// of these are cheap. Intent-bearing checks come first so a
+				// stopped or exhausted session is never mislabelled as merely
+				// stale.
+				new StatusActiveFilter(),
+				new StopIntentFilter(),
+				new AttemptBudgetFilter(),
 				new RunnerTypeFilter(),
 				new RepositoryOptInFilter(),
 				new StalenessFilter(),
@@ -6790,15 +6846,17 @@ ${input.userComment}
 			`Auto-resume orchestrator: drain complete — resumed=${summary.resumed.length} skipped=${summary.skipped.length} failed=${summary.failed.length}`,
 		);
 		if (summary.skipped.length > 0) {
-			const grouped: Record<string, number> = {};
-			for (const { reason } of summary.skipped) {
-				grouped[reason] = (grouped[reason] ?? 0) + 1;
+			const breakdown = formatSkipBreakdown(summary.skipped);
+			if (breakdown.actionable) {
+				this.logger.info(
+					`Auto-resume skip breakdown (actionable): ${breakdown.actionable}`,
+				);
 			}
-			this.logger.info(
-				`Auto-resume skip breakdown: ${Object.entries(grouped)
-					.map(([reason, count]) => `${reason}=${count}`)
-					.join(", ")}`,
-			);
+			if (breakdown.historical) {
+				this.logger.info(
+					`Auto-resume skip breakdown (historical, expected): ${breakdown.historical}`,
+				);
+			}
 		}
 		// Persist any state changes from the drain (retired sessions removed
 		// from memory by the retireSession callback). Without this an orphan
@@ -6816,12 +6874,12 @@ ${input.userComment}
 			raw.maxAgeMs !== undefined && raw.maxAgeMs >= 0
 				? raw.maxAgeMs
 				: 7 * 24 * 60 * 60 * 1000;
+		const maxAttempts =
+			raw.maxAttempts !== undefined && raw.maxAttempts >= 0
+				? raw.maxAttempts
+				: 3;
 		const holdLabel = raw.holdLabel ?? "cyrus:hold";
-		return { concurrency, staggerMs, maxAgeMs, holdLabel };
-	}
-
-	private getAnyAgentSessionManager(): AgentSessionManager | undefined {
-		return this.agentSessionManager;
+		return { concurrency, staggerMs, maxAgeMs, maxAttempts, holdLabel };
 	}
 
 	private async fetchAutoResumeIssueState(
@@ -6829,8 +6887,12 @@ ${input.userComment}
 	): Promise<IssueStateSnapshot | undefined> {
 		// Resolve a workspace tracker by trying each configured Linear workspace
 		// in turn — the issue belongs to exactly one and the others will 404.
+		// Misses are EXPECTED here (one hit, W-1 misses per session), so this
+		// probes quietly rather than going through `fetchFullIssueDetails`,
+		// whose miss path logs at ERROR and would emit N×(W−1) scary lines per
+		// boot on any multi-workspace install.
 		for (const workspaceId of this.issueTrackers.keys()) {
-			const issue = await this.fetchFullIssueDetails(issueId, workspaceId);
+			const issue = await this.probeIssueInWorkspace(issueId, workspaceId);
 			if (!issue) continue;
 			let stateType: string | undefined;
 			try {
@@ -6848,6 +6910,32 @@ ${input.userComment}
 			return { stateType, labels };
 		}
 		return undefined;
+	}
+
+	/**
+	 * Look an issue up in one specific workspace, treating "not in this
+	 * workspace" as an ordinary negative result rather than an error.
+	 *
+	 * `fetchFullIssueDetails` logs every miss at ERROR, which is right when
+	 * the caller already knows which workspace owns the issue and wrong when
+	 * the caller is deliberately probing all of them.
+	 */
+	private async probeIssueInWorkspace(
+		issueId: string,
+		linearWorkspaceId: string,
+	): Promise<Issue | null> {
+		const issueTracker = this.issueTrackers.get(linearWorkspaceId);
+		if (!issueTracker) return null;
+		try {
+			return await issueTracker.fetchIssue(issueId);
+		} catch (error) {
+			this.logger.debug(
+				`Issue ${issueId} not resolvable in workspace ${linearWorkspaceId}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return null;
+		}
 	}
 
 	private async resumeSessionForAutoResume(
@@ -6958,9 +7046,13 @@ ${input.userComment}
 	private async warmupRecentSessions(count = 30): Promise<void> {
 		const allSessions = this.agentSessionManager.getAllSessions();
 
-		// Only warm Claude sessions that have a persisted session ID and a workspace path
+		// Only warm Claude sessions that have a persisted session ID and a
+		// workspace path — and that do not already have a live runner.
+		// Auto-resume runs first and gives resumed sessions a real runner;
+		// warming one of those would put a second subprocess on the same
+		// Claude session in the same worktree.
 		const candidates = allSessions
-			.filter((s) => s.claudeSessionId && s.workspace?.path)
+			.filter((s) => s.claudeSessionId && s.workspace?.path && !s.agentRunner)
 			.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
 			.slice(0, count);
 

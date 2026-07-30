@@ -246,6 +246,12 @@ export class WorkerService {
 			// User access control configuration
 			userAccessControl: edgeConfig.userAccessControl,
 			sandbox: edgeConfig.sandbox,
+			// Start-time auto-resume tuning. This assembly hand-picks fields
+			// off EdgeConfig, so anything not named here is silently dropped
+			// and every `autoResume.*` knob would fall back to its hardcoded
+			// default no matter what the operator put in config.json.
+			// Regression-locked by WorkerService.autoResume.test.ts.
+			autoResume: edgeConfig.autoResume,
 			handlers: {
 				createWorkspace: async (
 					issue: Issue,

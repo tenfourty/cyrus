@@ -11,6 +11,7 @@ function ctx(maxAgeMs: number): ResumeFilterContext {
 			concurrency: 2,
 			staggerMs: [0, 0],
 			maxAgeMs,
+			maxAttempts: 3,
 			holdLabel: "",
 		},
 		repository: { autoResumeOnStartup: true } as any,

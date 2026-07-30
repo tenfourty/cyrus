@@ -436,6 +436,46 @@ export class AgentSessionManager extends EventEmitter {
 
 	requestSessionStop(linearAgentActivitySessionId: string): void {
 		this.stopRequestedSessions.add(linearAgentActivitySessionId);
+		// Also stamp the intent on the session record itself. The in-memory
+		// Set above is consumed when the runner emits its result message —
+		// but a force-killed runner often never emits one (the SDK throws
+		// AbortError, which the runner swallows), so `session.status` stays
+		// `Active` and the Set dies with the process. A persisted stamp is
+		// what lets start-time recovery honor the stop across a restart.
+		const session = this.sessions.get(linearAgentActivitySessionId);
+		if (session) {
+			session.stopRequestedAt = Date.now();
+		}
+	}
+
+	/**
+	 * Clear a previously recorded stop intent. Called when a fresh user
+	 * prompt arrives for the session: the user asking for more work is what
+	 * makes the session eligible for start-time resume again.
+	 */
+	clearStopIntent(linearAgentActivitySessionId: string): void {
+		const session = this.sessions.get(linearAgentActivitySessionId);
+		if (session?.stopRequestedAt !== undefined) {
+			session.stopRequestedAt = undefined;
+		}
+	}
+
+	/**
+	 * Increment the consecutive failed auto-resume counter for a session.
+	 * Called before each start-time resume attempt so a session that can
+	 * never be resumed stops being retried; see `AttemptBudgetFilter`.
+	 */
+	recordAutoResumeAttempt(sessionId: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		session.autoResumeAttempts = (session.autoResumeAttempts ?? 0) + 1;
+	}
+
+	/** Reset the consecutive failed auto-resume counter after a success. */
+	clearAutoResumeAttempts(sessionId: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		session.autoResumeAttempts = undefined;
 	}
 
 	/**

@@ -12,7 +12,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	PERSISTENCE_VERSION,
@@ -35,6 +35,24 @@ function makeState(numSessions: number): SerializableEdgeWorkerState {
 		};
 	}
 	return { agentSessions };
+}
+
+/** Above any plausible `/proc/sys/kernel/pid_max`, so `kill(pid, 0)` is ESRCH. */
+const DEAD_PID = 2_000_000_000;
+
+/**
+ * A pid that is definitely running and is definitely not us. Pid 1 always
+ * exists; treating it as "another cyrus instance" is enough to exercise the
+ * liveness guard.
+ */
+const LIVE_FOREIGN_PID = 1;
+
+function validStateJson() {
+	return {
+		version: PERSISTENCE_VERSION,
+		savedAt: "2026-05-10T00:00:00.000Z",
+		state: makeState(2),
+	};
 }
 
 describe("PersistenceManager atomic save", () => {
@@ -144,18 +162,52 @@ describe("PersistenceManager.loadEdgeWorkerState resilience", () => {
 	});
 
 	it("cleans up stale .tmp.* siblings of the state file at load time", async () => {
-		const validState = {
-			version: PERSISTENCE_VERSION,
-			savedAt: "2026-05-10T00:00:00.000Z",
-			state: makeState(2),
-		};
-		writeFileSync(stateFile, JSON.stringify(validState));
-		writeFileSync(`${stateFile}.tmp.1`, "abandoned tmp");
-		writeFileSync(`${stateFile}.tmp.2`, "another abandoned tmp");
+		writeFileSync(stateFile, JSON.stringify(validStateJson()));
+		// Pids above any plausible pid_max — guaranteed not running.
+		writeFileSync(`${stateFile}.tmp.${DEAD_PID}.1`, "abandoned tmp");
+		writeFileSync(
+			`${stateFile}.tmp.${DEAD_PID + 1}.1`,
+			"another abandoned tmp",
+		);
 
 		const loaded = await pm.loadEdgeWorkerState();
 		expect(loaded).not.toBeNull();
 		expect(Object.keys(loaded?.agentSessions ?? {})).toHaveLength(2);
+
+		const remaining = await readdir(tmpRoot);
+		expect(remaining.filter((f) => f.includes(".tmp."))).toHaveLength(0);
+	});
+
+	it("cleans up our own leftover tmp files", async () => {
+		writeFileSync(stateFile, JSON.stringify(validStateJson()));
+		writeFileSync(`${stateFile}.tmp.${process.pid}.7`, "our own leftover");
+
+		await pm.loadEdgeWorkerState();
+
+		const remaining = await readdir(tmpRoot);
+		expect(remaining.filter((f) => f.includes(".tmp."))).toHaveLength(0);
+	});
+
+	it("does NOT unlink a tmp file belonging to another live process", async () => {
+		// The `.tmp.<pid>` suffix exists so concurrent cyrus instances do not
+		// collide. Cleaning indiscriminately threw that away: this load would
+		// delete the other instance's in-flight tmp file and make its rename
+		// fail with ENOENT — losing that instance's save entirely.
+		writeFileSync(stateFile, JSON.stringify(validStateJson()));
+		const liveSibling = `${stateFile}.tmp.${LIVE_FOREIGN_PID}.1`;
+		writeFileSync(liveSibling, "another instance is mid-write");
+
+		await pm.loadEdgeWorkerState();
+
+		const remaining = await readdir(tmpRoot);
+		expect(remaining).toContain(basename(liveSibling));
+	});
+
+	it("cleans up tmp files whose pid segment cannot be parsed", async () => {
+		writeFileSync(stateFile, JSON.stringify(validStateJson()));
+		writeFileSync(`${stateFile}.tmp.legacy`, "pre-pid-suffix leftover");
+
+		await pm.loadEdgeWorkerState();
 
 		const remaining = await readdir(tmpRoot);
 		expect(remaining.filter((f) => f.includes(".tmp."))).toHaveLength(0);

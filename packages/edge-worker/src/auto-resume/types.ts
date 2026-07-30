@@ -6,13 +6,24 @@ export type SkipReason =
 	| "stale"
 	| "worktree-missing"
 	| "issue-state-changed"
-	| "hold-label";
+	| "issue-state-unavailable"
+	| "hold-label"
+	| "status-not-active"
+	| "user-stopped"
+	| "attempt-budget-exhausted"
+	| "duplicate-worktree"
+	| "shutting-down";
 
 export interface AutoResumeConfig {
 	concurrency: number;
 	/** [minMs, maxMs] inclusive range for jitter applied between resume starts. */
 	staggerMs: [number, number];
 	maxAgeMs: number;
+	/**
+	 * Consecutive failed resume attempts a session gets before auto-resume
+	 * gives up on it. `0` disables the budget.
+	 */
+	maxAttempts: number;
 	holdLabel: string;
 }
 

@@ -95,6 +95,24 @@ export interface CyrusAgentSession {
 	codexSessionId?: string; // Codex-specific session ID (assigned once it initializes)
 	cursorSessionId?: string; // Cursor-specific session ID (assigned once it initializes)
 	agentRunner?: IAgentRunner;
+	/**
+	 * Timestamp of the last user-initiated stop that was honored for this
+	 * session, or `undefined` if the user has not stopped it (or has since
+	 * re-prompted it).
+	 *
+	 * Persisted deliberately: `session.status` is only flipped to a terminal
+	 * value when the runner emits a result message, and a force-killed runner
+	 * frequently does not. Recording the *intent* separately means start-time
+	 * recovery can honor a stop even when the status field never caught up.
+	 */
+	stopRequestedAt?: number;
+	/**
+	 * Consecutive failed start-time auto-resume attempts. Incremented before
+	 * each attempt and reset to 0 once one succeeds, so a session that can
+	 * never be resumed (e.g. its issue was deleted) stops being retried
+	 * instead of failing on every boot forever.
+	 */
+	autoResumeAttempts?: number;
 	metadata?: {
 		model?: string;
 		tools?: string[];

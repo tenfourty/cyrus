@@ -11,7 +11,13 @@ function ctx(
 ): ResumeFilterContext {
 	return {
 		now: Date.now(),
-		config: { concurrency: 2, staggerMs: [0, 0], maxAgeMs: 0, holdLabel },
+		config: {
+			concurrency: 2,
+			staggerMs: [0, 0],
+			maxAgeMs: 0,
+			maxAttempts: 3,
+			holdLabel,
+		},
 		repository: { autoResumeOnStartup: true } as any,
 		issueState,
 	};

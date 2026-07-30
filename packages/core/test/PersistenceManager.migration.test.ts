@@ -3,7 +3,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	PERSISTENCE_VERSION,
@@ -17,6 +17,10 @@ vi.mock("node:fs", () => ({
 
 vi.mock("node:fs/promises", () => ({
 	mkdir: vi.fn(),
+	// `saveEdgeWorkerState` writes through a FileHandle so it can fsync the
+	// tmp file before renaming it into place; the same helper stands in for
+	// the directory fsync that makes the rename itself durable.
+	open: vi.fn(),
 	readFile: vi.fn(),
 	readdir: vi.fn().mockResolvedValue([]),
 	rename: vi.fn(),
@@ -26,9 +30,23 @@ vi.mock("node:fs/promises", () => ({
 
 describe("PersistenceManager", () => {
 	let persistenceManager: PersistenceManager;
+	/** Stands in for the tmp FileHandle the atomic save writes through. */
+	let handleWriteFile: ReturnType<typeof vi.fn>;
+
+	/** The payload the save path actually wrote, parsed. */
+	function savedPayload(): any {
+		expect(handleWriteFile).toHaveBeenCalled();
+		return JSON.parse(handleWriteFile.mock.calls[0][0] as string);
+	}
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		handleWriteFile = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(open).mockResolvedValue({
+			writeFile: handleWriteFile,
+			sync: vi.fn().mockResolvedValue(undefined),
+			close: vi.fn().mockResolvedValue(undefined),
+		} as any);
 		persistenceManager = new PersistenceManager("/tmp/test-cyrus");
 	});
 
@@ -138,12 +156,8 @@ describe("PersistenceManager", () => {
 
 			await persistenceManager.loadEdgeWorkerState();
 
-			// Verify writeFile was called with v4.0 version
-			expect(writeFile).toHaveBeenCalled();
-			const savedData = JSON.parse(
-				vi.mocked(writeFile).mock.calls[0][1] as string,
-			);
-			expect(savedData.version).toBe(PERSISTENCE_VERSION);
+			// Verify the migrated state was written with the v4.0 version
+			expect(savedPayload().version).toBe(PERSISTENCE_VERSION);
 		});
 
 		it("should flatten entries and preserve mappings during v2→v4 migration", async () => {
@@ -345,11 +359,7 @@ describe("PersistenceManager", () => {
 
 			await persistenceManager.loadEdgeWorkerState();
 
-			expect(writeFile).toHaveBeenCalled();
-			const savedData = JSON.parse(
-				vi.mocked(writeFile).mock.calls[0][1] as string,
-			);
-			expect(savedData.version).toBe("4.0");
+			expect(savedPayload().version).toBe("4.0");
 		});
 	});
 

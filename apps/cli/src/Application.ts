@@ -16,6 +16,13 @@ import { getDefaultReposDir } from "./utils/getDefaultReposDir.js";
 import { getDefaultWorktreesDir } from "./utils/getDefaultWorktreesDir.js";
 
 /**
+ * How long the graceful drain gets before we exit regardless. Comfortably
+ * under a typical systemd `TimeoutStopSec` (90s) so the service manager sees
+ * a clean exit rather than having to SIGKILL us.
+ */
+const SHUTDOWN_STOP_TIMEOUT_MS = 20_000;
+
+/**
  * Main application context providing access to services
  */
 export class Application {
@@ -351,7 +358,24 @@ export class Application {
 			this.configWatcher.close();
 		}
 
-		await this.worker.stop();
+		// Bound the drain. `worker.stop()` awaits network teardown and a state
+		// save; if any of that wedges, an unbounded await means `systemctl
+		// restart` sits until TimeoutStopSec and SIGKILLs us — losing the
+		// Sentry flush and any orderly cleanup that would have followed.
+		// Exiting a few seconds late with a warning beats hanging.
+		await Promise.race([
+			this.worker.stop().catch((error) => {
+				this.logger.error(
+					"Error while stopping worker during shutdown",
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}),
+			this.delay(SHUTDOWN_STOP_TIMEOUT_MS).then(() => {
+				this.logger.error(
+					`Worker did not stop within ${SHUTDOWN_STOP_TIMEOUT_MS}ms; exiting anyway`,
+				);
+			}),
+		]);
 
 		// Flush any buffered Sentry events before exiting
 		await this.errorReporter.flush(2000).catch(() => false);
@@ -359,19 +383,40 @@ export class Application {
 		process.exit(0);
 	}
 
+	/** Timer helper that never keeps the event loop alive. */
+	private delay(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			const timer = setTimeout(resolve, ms);
+			timer.unref?.();
+		});
+	}
+
+	/**
+	 * Route a shutdown signal.
+	 *
+	 * The first signal starts the graceful drain. A *second* signal means the
+	 * operator (or the service manager) has decided graceful is taking too
+	 * long — because `shutdown()` memoises its Promise, every later signal
+	 * would otherwise just re-await the same in-flight drain and Ctrl-C-twice
+	 * would do nothing at all. Escalate to an immediate exit instead.
+	 */
+	private handleShutdownSignal(signal: string): void {
+		if (this.shutdownPromise) {
+			this.logger.error(
+				`Received ${signal} during shutdown — forcing immediate exit`,
+			);
+			process.exit(1);
+		}
+		this.logger.info(`\nReceived ${signal}, shutting down gracefully...`);
+		void this.shutdown();
+	}
+
 	/**
 	 * Setup process signal handlers
 	 */
 	setupSignalHandlers(): void {
-		process.on("SIGINT", () => {
-			this.logger.info("\nReceived SIGINT, shutting down gracefully...");
-			void this.shutdown();
-		});
-
-		process.on("SIGTERM", () => {
-			this.logger.info("\nReceived SIGTERM, shutting down gracefully...");
-			void this.shutdown();
-		});
+		process.on("SIGINT", () => this.handleShutdownSignal("SIGINT"));
+		process.on("SIGTERM", () => this.handleShutdownSignal("SIGTERM"));
 
 		// Handle uncaught exceptions and unhandled promise rejections.
 		// Logger.error forwards the Error arg to the global ErrorReporter, so we

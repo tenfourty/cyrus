@@ -19,6 +19,20 @@ export interface AutoResumeOrchestratorDeps {
 	 * orchestrator can record them and skip conservatively.
 	 */
 	fetchIssueState: (issueId: string) => Promise<IssueStateSnapshot | undefined>;
+	/**
+	 * Records that a resume is about to be attempted, so a session that can
+	 * never be resumed eventually exhausts its budget instead of being
+	 * retried on every boot. Called immediately before `resumeSession`.
+	 */
+	recordResumeAttempt?: (session: CyrusAgentSession) => void;
+	/** Clears the consecutive-failure counter after a successful resume. */
+	clearResumeAttempts?: (session: CyrusAgentSession) => void;
+	/**
+	 * Cooperative cancellation. Polled before each preflight and before each
+	 * resume so a shutdown that lands mid-drain does not keep spawning
+	 * runners the process is about to orphan.
+	 */
+	shouldAbort?: () => boolean;
 	/** Spawns a fresh runner for the session via the existing resume path. */
 	resumeSession: (session: CyrusAgentSession) => Promise<void>;
 	/** Posts a "resumed after restart" activity. Best-effort. */
@@ -60,6 +74,30 @@ const NOTIFY_RETIRED_REASONS: ReadonlySet<SkipReason> = new Set([
 ]);
 
 /**
+ * Identity for "these two sessions would fight over the same working copy".
+ *
+ * Worktree paths are the thing that actually gets corrupted by two
+ * concurrent agents, so they are the primary key (sorted, so multi-repo
+ * sessions listing the same set in a different order still collide). Issue
+ * id is the fallback, because a worktree is derived from the issue and a
+ * session missing workspace paths still shares the issue's thread. Session
+ * id last, which never collides — a session with neither is unique by
+ * construction.
+ */
+export function dedupKeyFor(session: CyrusAgentSession): string {
+	const repoPaths = session.workspace?.repoPaths;
+	if (repoPaths) {
+		const paths = Object.values(repoPaths).filter(Boolean).sort();
+		if (paths.length > 0) return `worktree:${paths.join("|")}`;
+	}
+	const path = session.workspace?.path;
+	if (path) return `worktree:${path}`;
+	const issueId = session.issueContext?.issueId ?? session.issueId;
+	if (issueId) return `issue:${issueId}`;
+	return `session:${session.id}`;
+}
+
+/**
  * Walks persisted active sessions at startup, applies a filter pipeline to
  * decide which should be respawned, and drains survivors through a
  * concurrency-capped queue with jitter. Pre-flight is split into cheap
@@ -86,18 +124,44 @@ export class AutoResumeOrchestrator {
 
 		const sessions = this.deps.sessions();
 		const survivors: CyrusAgentSession[] = [];
+		// Worktree/issue keys already claimed by an admitted session this run.
+		// Two Active sessions on one issue is a real persisted state, and both
+		// would otherwise get a runner in the same worktree at once — exactly
+		// the concurrent-agent corruption we avoid at the webhook layer.
+		const claimedKeys = new Map<string, string>();
 
 		for (const session of sessions) {
-			const result = await this.preflight(session);
-			if (result === null) {
-				survivors.push(session);
+			if (this.aborted()) {
+				summary.skipped.push({
+					sessionId: session.id,
+					reason: "shutting-down",
+				});
 				continue;
 			}
-			summary.skipped.push({ sessionId: session.id, reason: result });
-			if (NOTIFY_RETIRED_REASONS.has(result)) {
-				await this.safeNotifyRetired(session, result);
-				await this.safeRetireSession(session, result);
+			const result = await this.preflight(session);
+			if (result !== null) {
+				summary.skipped.push({ sessionId: session.id, reason: result });
+				if (NOTIFY_RETIRED_REASONS.has(result)) {
+					await this.safeNotifyRetired(session, result);
+					await this.safeRetireSession(session, result);
+				}
+				continue;
 			}
+
+			const key = dedupKeyFor(session);
+			const claimedBy = claimedKeys.get(key);
+			if (claimedBy !== undefined) {
+				this.deps.logger.warn(
+					`Auto-resume: session ${session.id} shares workspace/issue "${key}" with already-admitted session ${claimedBy}; skipping to avoid two agents in one worktree`,
+				);
+				summary.skipped.push({
+					sessionId: session.id,
+					reason: "duplicate-worktree",
+				});
+				continue;
+			}
+			claimedKeys.set(key, session.id);
+			survivors.push(session);
 		}
 
 		const semaphore = new Semaphore(this.deps.config.concurrency);
@@ -105,16 +169,38 @@ export class AutoResumeOrchestrator {
 			survivors.map((session) =>
 				semaphore.run(async () => {
 					await this.applyJitter();
+					if (this.aborted()) {
+						summary.skipped.push({
+							sessionId: session.id,
+							reason: "shutting-down",
+						});
+						return;
+					}
+					// Count the attempt BEFORE trying. A resume that throws every
+					// time (deleted issue, permanently broken workspace) must
+					// still burn budget, otherwise it is retried on every boot
+					// forever — `updatedAt`-based staleness cannot catch it
+					// because resuming refreshes `updatedAt`.
+					this.deps.recordResumeAttempt?.(session);
 					try {
 						await this.deps.resumeSession(session);
 						summary.resumed.push(session.id);
+						this.deps.clearResumeAttempts?.(session);
 						await this.safeNotifyResumed(session);
 					} catch (error) {
 						const err =
 							error instanceof Error ? error : new Error(String(error));
 						summary.failed.push({ sessionId: session.id, error: err });
+						const attempts = session.autoResumeAttempts ?? 0;
+						const max = this.deps.config.maxAttempts;
+						const budgetNote =
+							max > 0
+								? attempts >= max
+									? ` — attempt budget exhausted (${attempts}/${max}), this session will not be auto-resumed again unless it is re-prompted`
+									: ` — attempt ${attempts}/${max}`
+								: "";
 						this.deps.logger.error(
-							`Auto-resume failed for session ${session.id}`,
+							`Auto-resume failed for session ${session.id}${budgetNote}`,
 							err,
 						);
 					}
@@ -123,6 +209,10 @@ export class AutoResumeOrchestrator {
 		);
 
 		return summary;
+	}
+
+	private aborted(): boolean {
+		return this.deps.shouldAbort?.() === true;
 	}
 
 	private async preflight(
@@ -154,10 +244,27 @@ export class AutoResumeOrchestrator {
 				issueState = await this.deps.fetchIssueState(issueId);
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
+				// A tracker outage is not the same thing as "the issue was
+				// closed". Reporting both as `issue-state-changed` made a
+				// transient 5xx at boot look like a deliberate operator action
+				// in the journal, while silently disabling the whole feature
+				// for that run. Retry once, then report honestly under its own
+				// reason so the count is visibly an infrastructure problem.
 				this.deps.logger.warn(
-					`Auto-resume could not verify issue state for ${session.id} (${issueId}); skipping conservatively: ${err.message}`,
+					`Auto-resume could not verify issue state for ${session.id} (${issueId}); retrying once: ${err.message}`,
 				);
-				return "issue-state-changed";
+				try {
+					issueState = await this.deps.fetchIssueState(issueId);
+				} catch (retryError) {
+					const retryErr =
+						retryError instanceof Error
+							? retryError
+							: new Error(String(retryError));
+					this.deps.logger.warn(
+						`Auto-resume still could not verify issue state for ${session.id} (${issueId}) after a retry; skipping conservatively (issue tracker unavailable, NOT an issue state change): ${retryErr.message}`,
+					);
+					return "issue-state-unavailable";
+				}
 			}
 		}
 

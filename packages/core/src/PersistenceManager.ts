@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import {
 	mkdir,
+	open,
 	readdir,
 	readFile,
 	rename,
@@ -150,8 +151,20 @@ export class PersistenceManager {
 				savedAt: new Date().toISOString(),
 				state,
 			};
-			await writeFile(tmpFile, JSON.stringify(stateData, null, 2), "utf8");
+			// Write + fsync the tmp file before renaming. `rename()` alone gives
+			// atomic *visibility* (a reader sees old-or-new, never partial) but
+			// not crash consistency: without the fsync the kernel may commit the
+			// directory entry before the data blocks, so a power loss right after
+			// the rename can surface a correctly-named but zero-length file.
+			const handle = await open(tmpFile, "w");
+			try {
+				await handle.writeFile(JSON.stringify(stateData, null, 2), "utf8");
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
 			await rename(tmpFile, stateFile);
+			await this.syncDirectory(dirname(stateFile));
 		} catch (error) {
 			this.logger.error("Failed to save EdgeWorker state:", error);
 			// Best-effort cleanup — if the tmp file was created but the rename
@@ -164,6 +177,25 @@ export class PersistenceManager {
 				// nothing to clean up
 			}
 			throw error;
+		}
+	}
+
+	/**
+	 * fsync a directory so a just-completed `rename()` is itself durable.
+	 * Best-effort: some platforms (notably Windows) reject opening a
+	 * directory for this, and a missing directory fsync only costs us
+	 * durability of the rename, not correctness of the data.
+	 */
+	private async syncDirectory(dir: string): Promise<void> {
+		try {
+			const handle = await open(dir, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		} catch {
+			// best-effort — unsupported platform or transient error
 		}
 	}
 
@@ -381,11 +413,22 @@ export class PersistenceManager {
 	}
 
 	/**
-	 * Remove any leftover `.tmp.<pid>` siblings of the state file. These can
-	 * accumulate when a process is killed between `writeFile(tmpFile, ...)`
-	 * and `rename(tmpFile, stateFile)` in `saveEdgeWorkerState`. Best-effort:
-	 * any error is swallowed because failure to clean cruft must not block
-	 * loading.
+	 * Remove leftover `<stateFile>.tmp.<pid>.<n>` siblings. These accumulate
+	 * when a process is killed between the tmp write and the rename in
+	 * `saveEdgeWorkerState`.
+	 *
+	 * Only orphans are removed. A tmp file whose pid segment belongs to a
+	 * *different, still-running* process is left alone — that file is very
+	 * likely a live in-flight write by a concurrent cyrus instance, and
+	 * unlinking it would make that instance's rename fail with ENOENT. (The
+	 * per-pid suffix exists precisely to keep instances from colliding;
+	 * cleaning indiscriminately would have thrown that guarantee away.)
+	 *
+	 * Files we cannot attribute (unparseable pid) are treated as orphans —
+	 * they cannot belong to a live writer using the current naming scheme.
+	 *
+	 * Best-effort throughout: any error is swallowed because failure to clean
+	 * cruft must not block loading.
 	 */
 	private async cleanupStaleTmpFiles(stateFile: string): Promise<void> {
 		try {
@@ -396,6 +439,7 @@ export class PersistenceManager {
 			await Promise.all(
 				entries
 					.filter((name) => name.startsWith(tmpPrefix))
+					.filter((name) => this.isOrphanTmpFile(name, tmpPrefix))
 					.map(async (name) => {
 						try {
 							await unlink(join(dir, name));
@@ -406,6 +450,29 @@ export class PersistenceManager {
 			);
 		} catch {
 			// directory missing, permission error, etc. — best-effort cleanup
+		}
+	}
+
+	/**
+	 * Whether a `<base>.tmp.<pid>.<n>` file can be safely unlinked: true for
+	 * our own pid (a previous save of this very process that never renamed)
+	 * and for pids that are no longer running; false while another live
+	 * process owns it.
+	 */
+	private isOrphanTmpFile(name: string, tmpPrefix: string): boolean {
+		const suffix = name.slice(tmpPrefix.length);
+		const pid = Number.parseInt(suffix.split(".")[0] ?? "", 10);
+		if (!Number.isInteger(pid) || pid <= 0) return true;
+		if (pid === process.pid) return true;
+		try {
+			// Signal 0 performs the permission/existence check without
+			// delivering a signal. Throws ESRCH when no such process exists.
+			process.kill(pid, 0);
+			return false;
+		} catch (error) {
+			// EPERM means the process exists but belongs to another user —
+			// still live, so leave its tmp file alone.
+			return (error as NodeJS.ErrnoException)?.code !== "EPERM";
 		}
 	}
 

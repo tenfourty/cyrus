@@ -246,6 +246,7 @@ export class ConfigManager extends EventEmitter {
 				defaultDisallowedTools:
 					parsedConfig.defaultDisallowedTools ||
 					this.config.defaultDisallowedTools,
+				autoResume: parsedConfig.autoResume || this.config.autoResume,
 				// Issue update trigger: use parsed value if explicitly set,
 				// otherwise keep current or default to true
 				issueUpdateTrigger:
@@ -360,6 +361,7 @@ export class ConfigManager extends EventEmitter {
 			"linearWorkspaces",
 			"userAccessControl",
 			"sandbox",
+			"autoResume",
 		];
 
 		for (const key of globalKeys) {

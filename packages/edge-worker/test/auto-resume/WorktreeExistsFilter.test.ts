@@ -7,7 +7,13 @@ import type { ResumeFilterContext } from "../../src/auto-resume/types.js";
 
 const ctx: ResumeFilterContext = {
 	now: Date.now(),
-	config: { concurrency: 2, staggerMs: [0, 0], maxAgeMs: 0, holdLabel: "" },
+	config: {
+		concurrency: 2,
+		staggerMs: [0, 0],
+		maxAgeMs: 0,
+		maxAttempts: 3,
+		holdLabel: "",
+	},
 	repository: { autoResumeOnStartup: true } as any,
 };
 

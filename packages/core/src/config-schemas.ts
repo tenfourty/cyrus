@@ -342,6 +342,14 @@ export const AutoResumeConfigSchema = z.object({
 	 */
 	maxAgeMs: z.number().int().nonnegative().optional(),
 	/**
+	 * How many consecutive failed start-time resume attempts a session gets
+	 * before auto-resume gives up on it. Prevents a permanently unresumable
+	 * session (e.g. its issue was deleted) from being retried on every boot
+	 * forever. The counter resets as soon as an attempt succeeds. Set to 0
+	 * to disable the budget (not recommended).
+	 */
+	maxAttempts: z.number().int().nonnegative().optional(),
+	/**
 	 * Linear label that pauses auto-resume for an issue. Match is
 	 * case-insensitive. Empty string disables the check.
 	 */
