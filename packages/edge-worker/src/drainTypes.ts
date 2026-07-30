@@ -2,7 +2,7 @@
 
 export type DrainState = "running" | "draining" | "shutting-down" | "exiting";
 
-export type DrainTrigger = "sigterm" | "admin-endpoint" | "uncaught-exception";
+export type DrainTrigger = "sigterm" | "uncaught-exception";
 
 export interface PendingToolUse {
 	id: string;

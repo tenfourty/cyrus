@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+- The HTTP endpoints for starting a drain have been removed. They accepted requests without any authentication, on the same port that receives issue-tracker webhooks, so anyone able to reach that port could stop Cyrus from taking new work. Sending SIGTERM still drains and shuts down cleanly, which is how the supervisor already stops Cyrus.
+
 ### Changed
 - **Routing-context prompt now surfaces `<sibling_participants>` and clarifies single-repo tag scope** — In multi-repo workspaces, the `<repository_routing_context>` block (consumed by both Linear orchestrator sessions and the Slack `@`-mention adapter) now lists each repo's declared `siblingParticipants` so the agent can see what auto-expansion is configured. The description also makes explicit that a single-repo description tag like `[repo=A]` is a hard scope-down (mounts only A even when A has declared siblings), and recommends either omitting the tag — letting label/team/project routing fire and auto-expand siblings — or using the comma form `[repo=A,B]` when work genuinely spans multiple repos. The Slack adapter's orchestration notes were rewritten accordingly. Fixes a class of misroutings where a Slack-originated issue creation picked a confident single-repo tag and produced sessions scoped too narrowly to read sibling repos, surfacing as benign-but-noisy permission denials in `providerExtras.permissionDenials`.
 

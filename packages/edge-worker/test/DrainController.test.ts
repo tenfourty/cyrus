@@ -284,7 +284,7 @@ describe("DrainController", () => {
 		});
 
 		const p1 = dc.beginDrain("sigterm");
-		const p2 = dc.beginDrain("admin-endpoint");
+		const p2 = dc.beginDrain("uncaught-exception");
 		expect(p1).toBe(p2);
 	});
 
@@ -336,7 +336,7 @@ describe("DrainController", () => {
 		const p1 = dc.beginDrain("sigterm");
 		const listenerCountAfterFirst = asm.listenerCount("session_terminal");
 
-		const p2 = dc.beginDrain("admin-endpoint");
+		const p2 = dc.beginDrain("uncaught-exception");
 		const listenerCountAfterSecond = asm.listenerCount("session_terminal");
 
 		// Same promise returned

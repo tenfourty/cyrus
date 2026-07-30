@@ -1040,7 +1040,6 @@ export class EdgeWorker extends EventEmitter {
 		this.registerVersionEndpoint();
 
 		// 6. Register admin drain endpoints
-		this.registerDrainEndpoints();
 	}
 
 	/**
@@ -1074,46 +1073,6 @@ export class EdgeWorker extends EventEmitter {
 
 		this.logger.info("✅ Version endpoint registered");
 		this.logger.info("   Route: GET /version");
-	}
-
-	/**
-	 * Register admin drain endpoints.
-	 *
-	 * POST /admin/drain  — initiate a graceful drain.  Returns 202 or 409 if already draining.
-	 * GET  /admin/drain/status — return DrainController.getStatus().
-	 *
-	 * NOTE: These endpoints are currently unauthenticated.  The SharedApplicationServer
-	 * typically listens on localhost/tunnel only, but operators should confirm network
-	 * exposure before deploying to internet-facing hosts.
-	 */
-	private registerDrainEndpoints(): void {
-		const fastify = this.sharedApplicationServer.getFastifyInstance();
-
-		fastify.post("/admin/drain", async (_req, reply) => {
-			if (this.drainController.isDraining()) {
-				return reply.status(409).send({ error: "drain-already-in-progress" });
-			}
-			this.beginAdminDrain();
-			return reply.status(202).send({ state: "draining" });
-		});
-
-		fastify.get("/admin/drain/status", async (_req, reply) => {
-			return reply.status(200).send(this.drainController.getStatus());
-		});
-
-		this.logger.info("✅ Admin drain endpoints registered");
-		this.logger.info("   Routes: POST /admin/drain, GET /admin/drain/status");
-	}
-
-	/**
-	 * Start an admin-triggered drain.  After drain completes (or is force-killed),
-	 * raise SIGTERM so the existing Application.shutdown handler fires and the
-	 * process exits cleanly.  This avoids duplicating shutdown logic here.
-	 */
-	private beginAdminDrain(): void {
-		void this.drainController.beginDrain("admin-endpoint").then(() => {
-			process.kill(process.pid, "SIGTERM");
-		});
 	}
 
 	/**
