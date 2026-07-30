@@ -169,6 +169,7 @@ import {
 	resolveIssueMcpConfigPath,
 } from "./RunnerConfigBuilder.js";
 import { RunnerSelectionService } from "./RunnerSelectionService.js";
+import { reconcileAndReap } from "./reconcileAndReap.js";
 import { SharedApplicationServer } from "./SharedApplicationServer.js";
 import {
 	type SkillSessionContext,
@@ -488,6 +489,19 @@ export class EdgeWorker extends EventEmitter {
 				);
 			},
 		);
+
+		// Reap a live runner (and any pending warm instance) left behind by an
+		// abnormal terminal transition (Error/Stale). Deferred via setImmediate
+		// so it observes the already-flipped status and doesn't re-enter stop()
+		// mid result-emit — see reconcileAndReap.ts.
+		this.agentSessionManager.on("session_terminal", ({ sessionId }) => {
+			setImmediate(() => {
+				reconcileAndReap(sessionId, {
+					getSession: (id) => this.agentSessionManager.getSession(id),
+					reapWarmInstance: (id) => this.reapWarmInstance(id),
+				});
+			});
+		});
 
 		// Initialize repositories with path resolution
 		for (const repo of config.repositories) {
@@ -6562,6 +6576,27 @@ ${input.userComment}
 		}
 
 		return result;
+	}
+
+	/**
+	 * Discard a pre-warmed subprocess for a session without consuming it —
+	 * closes the underlying WarmQuery (if one is still pending) and removes
+	 * it from `warmInstances` so it isn't attached to a later runner. Used by
+	 * reconcileAndReap when a session lands on Error/Stale so a warm
+	 * counterpart (if any) doesn't leak.
+	 */
+	private reapWarmInstance(sessionId: string): void {
+		const warm = this.warmInstances.get(sessionId);
+		if (!warm) return;
+		try {
+			warm.close();
+		} catch (err) {
+			this.logger.debug(
+				`Error closing warm instance for session ${sessionId}:`,
+				err,
+			);
+		}
+		this.warmInstances.delete(sessionId);
 	}
 
 	/**

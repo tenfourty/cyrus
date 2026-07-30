@@ -40,8 +40,15 @@ import type {
 /**
  * Events emitted by AgentSessionManager
  */
-// biome-ignore lint/complexity/noBannedTypes: Empty events type (events removed in CYPACK-996 skill refactor)
-export type AgentSessionManagerEvents = {};
+export type AgentSessionManagerEvents = {
+	/**
+	 * Fired whenever a session's in-memory status transitions to a terminal
+	 * value (Complete, Error, or Stale). EdgeWorker subscribes to this to
+	 * reconcile+reap a live runner left behind by an out-of-band termination
+	 * (crash/OOM/SIGTERM) — see reconcileAndReap.ts.
+	 */
+	session_terminal: (event: { sessionId: string }) => void;
+};
 
 /**
  * Type-safe event emitter interface for AgentSessionManager
@@ -439,6 +446,24 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
+	 * Flip a session to a terminal status when a stop was honored without the
+	 * runner emitting a result message (e.g. a non-interruptible stop that
+	 * force-kills the runner, or an out-of-band termination reconciled from
+	 * outside the normal completeSession path).
+	 *
+	 * Without this, persisted `session.status` stays whatever it was before
+	 * the stop/crash — completeSession (which flips status via the result
+	 * message) never runs. Status maps to AgentSessionStatus.Error to match
+	 * completeSession's existing convention for stopped/terminated sessions;
+	 * Linear's enum has no dedicated "stopped" value.
+	 */
+	async markSessionStopped(sessionId: string): Promise<void> {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+		await this.updateSessionStatus(sessionId, AgentSessionStatus.Error);
+	}
+
+	/**
 	 * Handle child session completion and resume parent
 	 */
 	private async handleChildSessionCompletion(
@@ -670,6 +695,14 @@ export class AgentSessionManager extends EventEmitter {
 		}
 
 		this.sessions.set(sessionId, session);
+
+		if (
+			status === AgentSessionStatus.Complete ||
+			status === AgentSessionStatus.Error ||
+			status === AgentSessionStatus.Stale
+		) {
+			this.emit("session_terminal", { sessionId });
+		}
 	}
 
 	/**
