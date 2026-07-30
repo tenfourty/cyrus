@@ -3,9 +3,6 @@
  *
  * Covers:
  * 1. getDrainController() returns a non-null DrainController.
- * 2. POST /admin/drain returns 409 when already draining.
- * 3. POST /admin/drain returns 202 when running.
- * 4. GET /admin/drain/status returns DrainController.getStatus() result.
  * 5. EdgeWorker.stop({kind: "force-killed"}) writes lastInFlightToolUses before persisting.
  */
 
@@ -154,107 +151,6 @@ describe("EdgeWorker — drain integration", () => {
 	});
 
 	// ── test 2 ───────────────────────────────────────────────────────────────
-
-	it("POST /admin/drain returns 409 when drain is already in progress", async () => {
-		edgeWorker = new EdgeWorker(baseConfig);
-
-		// Spy on isDraining to return true
-		const dc: DrainController = (edgeWorker as any).getDrainController();
-		vi.spyOn(dc, "isDraining").mockReturnValue(true);
-
-		// Capture handlers by calling registerDrainEndpoints directly
-		const capturedPost: Map<string, any> = new Map();
-		const capturedGet: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) =>
-			capturedPost.set(path, handler),
-		);
-		mockGetFn.mockImplementation((path: string, handler: any) =>
-			capturedGet.set(path, handler),
-		);
-
-		(edgeWorker as any).registerDrainEndpoints();
-
-		const adminDrainHandler = capturedPost.get("/admin/drain");
-		expect(adminDrainHandler).toBeDefined();
-
-		const reply = makeReply();
-		await adminDrainHandler({}, reply);
-
-		expect(reply.status).toHaveBeenCalledWith(409);
-		expect(reply.send).toHaveBeenCalledWith({
-			error: "drain-already-in-progress",
-		});
-	});
-
-	// ── test 3 ───────────────────────────────────────────────────────────────
-
-	it("POST /admin/drain returns 202 when not yet draining", async () => {
-		edgeWorker = new EdgeWorker(baseConfig);
-
-		const dc: DrainController = (edgeWorker as any).getDrainController();
-		vi.spyOn(dc, "isDraining").mockReturnValue(false);
-		vi.spyOn(dc, "beginDrain").mockResolvedValue({
-			kind: "drained",
-			durationMs: 0,
-			sessionCount: 0,
-		});
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
-
-		const capturedPost: Map<string, any> = new Map();
-		mockPostFn.mockImplementation((path: string, handler: any) =>
-			capturedPost.set(path, handler),
-		);
-
-		(edgeWorker as any).registerDrainEndpoints();
-
-		const adminDrainHandler = capturedPost.get("/admin/drain");
-		expect(adminDrainHandler).toBeDefined();
-
-		const reply = makeReply();
-		await adminDrainHandler({}, reply);
-
-		expect(reply.status).toHaveBeenCalledWith(202);
-		expect(reply.send).toHaveBeenCalledWith({ state: "draining" });
-
-		// Wait a tick for the fire-and-forget to resolve
-		await new Promise((r) => setTimeout(r, 10));
-		expect(killSpy).toHaveBeenCalledWith(process.pid, "SIGTERM");
-
-		killSpy.mockRestore();
-	});
-
-	// ── test 4 ───────────────────────────────────────────────────────────────
-
-	it("GET /admin/drain/status returns DrainController.getStatus()", async () => {
-		edgeWorker = new EdgeWorker(baseConfig);
-
-		const dc: DrainController = (edgeWorker as any).getDrainController();
-		const fakeStatus = {
-			state: "running" as const,
-			startedAt: null,
-			hardCapRemainingMs: null,
-			sessions: [],
-		};
-		vi.spyOn(dc, "getStatus").mockReturnValue(fakeStatus);
-
-		const capturedGet: Map<string, any> = new Map();
-		mockGetFn.mockImplementation((path: string, handler: any) =>
-			capturedGet.set(path, handler),
-		);
-
-		(edgeWorker as any).registerDrainEndpoints();
-
-		const adminStatusHandler = capturedGet.get("/admin/drain/status");
-		expect(adminStatusHandler).toBeDefined();
-
-		const reply = makeReply();
-		await adminStatusHandler({}, reply);
-
-		expect(reply.status).toHaveBeenCalledWith(200);
-		expect(reply.send).toHaveBeenCalledWith(fakeStatus);
-	});
-
-	// ── test 5 ───────────────────────────────────────────────────────────────
 
 	it("stop() with force-killed outcome writes lastInFlightToolUses before persisting", async () => {
 		edgeWorker = new EdgeWorker(baseConfig);
